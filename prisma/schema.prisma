@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Event {
+  id           String        @id
+  title        String
+  tagline      String
+  genre        String
+  duration     Int
+  ageRating    String
+  startsAt     DateTime      @db.Timestamptz(3)
+  hall         String
+  artwork      String
+  seats        EventSeat[]
+  reservations Reservation[]
+}
+
+model EventSeat {
+  eventId              String
+  seatId               String
+  currentReservationId String?       @unique @db.Uuid
+  event                Event         @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  currentReservation   Reservation?  @relation("CurrentOwner", fields: [currentReservationId], references: [id], onDelete: Restrict)
+  reservations         Reservation[] @relation("SeatHistory")
+  @@id([eventId, seatId])
+}
+
+model Reservation {
+  id           String    @id @db.Uuid
+  eventId      String
+  seatId       String
+  customerName String
+  email        String
+  fingerprint  String
+  createdAt    DateTime  @db.Timestamptz(3)
+  expiresAt    DateTime  @db.Timestamptz(3)
+  event        Event     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  seat         EventSeat @relation("SeatHistory", fields: [eventId, seatId], references: [eventId, seatId], onDelete: Restrict)
+  ownedSeat    EventSeat? @relation("CurrentOwner")
+  ticket       Ticket?
+  @@unique([id, eventId, seatId])
+  @@index([eventId, seatId, expiresAt])
+}
+
+model Ticket {
+  id            String      @id @db.Uuid
+  reservationId String      @unique @db.Uuid
+  eventId       String
+  seatId        String
+  code          String      @unique
+  purchasedAt   DateTime    @db.Timestamptz(3)
+  reservation   Reservation @relation(fields: [reservationId, eventId, seatId], references: [id, eventId, seatId], onDelete: Restrict)
+  @@unique([reservationId, eventId, seatId])
+  @@unique([eventId, seatId])
+}
+
+model RateLimit {
+  key       String   @id
+  attempts  Int
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+}

@@ -1,0 +1,23 @@
+server {
+    listen 80;
+    server_name _;
+    client_max_body_size 4k;
+
+    # Jeżeli przed tym proxy jest zaufany load balancer, skonfiguruj WYŁĄCZNIE
+    # jego dokładny adres/CIDR (nie 0.0.0.0/0):
+    # set_real_ip_from 192.0.2.10;
+    # real_ip_header X-Forwarded-For;
+    # real_ip_recursive on;
+
+    location / {
+        proxy_pass http://app:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Kadr-Client-IP $remote_addr;
+        proxy_set_header X-Kadr-Proxy-Secret "${TRUSTED_PROXY_SECRET}";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache off;
+        proxy_read_timeout 30s;
+    }
+}

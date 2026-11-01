@@ -1,0 +1,48 @@
+# Zależności i pliki odtwarzane podczas instalacji / budowania.
+node_modules/
+/.next/
+/out/
+/dist/
+/build/
+/coverage/
+/src/generated/
+/next-env.d.ts
+*.tsbuildinfo
+/.npm-cache/
+/.cache/
+
+# Sekrety i lokalna konfiguracja; przykład bez sekretów pozostaje w repo.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Testy jednostkowe i API są wersjonowane. Playwright pozostaje lokalny.
+/tests/browser/
+/scripts/*
+!/scripts/run-tests.ts
+/playwright.config.ts
+/TESTING.local.md
+/test-results/
+/playwright-report/
+/output/
+
+# Lokalne instrukcje dla agentów, materiały robocze i ustawienia edytora.
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/.agents/
+/.codex/
+/docs/
+/.idea/
+/.vscode/
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

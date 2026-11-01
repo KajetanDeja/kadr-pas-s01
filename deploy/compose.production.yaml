@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Ustaw użytkownika}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Ustaw hasło}
+      POSTGRES_DB: ${POSTGRES_DB:-kadr}
+    volumes: ["kadr-production-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  app:
+    image: kadr-pas-s01:local
+    build: { context: .., dockerfile: Dockerfile }
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kadr}
+      RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
+      TRUSTED_PROXY_SECRET: ${TRUSTED_PROXY_SECRET:?Ustaw sekret proxy minimum 32 znaki}
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+  proxy:
+    image: nginx:alpine
+    environment:
+      TRUSTED_PROXY_SECRET: ${TRUSTED_PROXY_SECRET:?Ustaw sekret proxy}
+      NGINX_ENVSUBST_FILTER: '^TRUSTED_PROXY_SECRET$$'
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports: ["127.0.0.1:8080:80"]
+    depends_on: [app]
+    restart: unless-stopped
+volumes:
+  kadr-production-data:
