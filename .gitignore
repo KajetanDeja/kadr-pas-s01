@@ -10,6 +10,7 @@ node_modules/
 *.tsbuildinfo
 /.npm-cache/
 /.cache/
+/.vercel/
 
 # Sekrety i lokalna konfiguracja; przykład bez sekretów pozostaje w repo.
 .env

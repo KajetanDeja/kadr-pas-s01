@@ -4,9 +4,20 @@ import { config } from "./config";
 import { db } from "./db";
 import { ApiError } from "./errors";
 
-export function clientKey(headers: Headers, secret?: string) {
+export function isVercelDeployment(env: Record<string, string | undefined> = process.env) {
+  return env.VERCEL === "1" && (env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview");
+}
+
+// Tryb Vercel pochodzi wyłącznie z konfiguracji procesu, nigdy z nagłówka żądania.
+export function clientKey(headers: Headers, secret?: string, vercelDeployment = false) {
   let client = "local-shared";
-  if (secret) {
+  if (vercelDeployment) {
+    // Vercel nadpisuje ten nagłówek na swoim wejściu. Nie używamy fallbacku
+    // do X-Forwarded-For ani nagłówków własnego proxy dostarczonych przez klienta.
+    const ip = headers.get("x-vercel-forwarded-for")?.trim() ?? "";
+    if (!isIP(ip)) throw new ApiError(400, "INVALID_CLIENT_IP", "Nie udało się odczytać poprawnego adresu klienta z Vercel.");
+    client = ip;
+  } else if (secret) {
     const provided = headers.get("x-kadr-proxy-secret") ?? "";
     const a = Buffer.from(provided), b = Buffer.from(secret);
     if (a.length !== b.length || !timingSafeEqual(a, b)) throw new ApiError(403, "PROXY_REQUIRED", "Żądanie musi przejść przez zaufane proxy.");
@@ -18,7 +29,7 @@ export function clientKey(headers: Headers, secret?: string) {
 }
 
 export async function limitReservation(headers: Headers) {
-  const key = clientKey(headers, config().TRUSTED_PROXY_SECRET);
+  const key = clientKey(headers, config().TRUSTED_PROXY_SECRET, isVercelDeployment());
   // Usuwanie oportunistyczne, również po 429. W spoczynku tabela nie rośnie.
   await db().$executeRaw`DELETE FROM "RateLimit" WHERE "expiresAt" < clock_timestamp() - interval '1 minute'`;
   const [bucket] = await db().$queryRaw<{ attempts: number; retry: number }[]>`

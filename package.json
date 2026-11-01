@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "prisma generate && next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "prisma generate && next typegen && tsc --noEmit",
     "db:generate": "prisma generate",
@@ -12,6 +13,7 @@
     "test": "npm run test:unit && npm run test:api",
     "test:unit": "prisma generate && tsx --test tests/unit.test.ts",
     "test:api": "tsx scripts/run-tests.ts api",
+    "test:vercel": "tsx scripts/run-tests.ts vercel",
     "test:120": "tsx scripts/run-tests.ts ttl120"
   },
   "dependencies": {

@@ -6,9 +6,13 @@ if (!process.env.DATABASE_URL || !new URL(process.env.DATABASE_URL).pathname.end
 export const db = createDb(process.env.DATABASE_URL);
 export const base = process.env.TEST_BASE_URL!;
 export const second = process.env.TEST_SECOND_URL ?? base;
-export const headers = (ip = "192.0.2.1") => ({
+export const headers = (ip = "192.0.2.1"): Record<string,string> => process.env.TEST_PROXY_MODE === "vercel" ? {
+  "Content-Type": "application/json", "x-vercel-forwarded-for": ip,
+  // Sprzeczne, niezaufane nagłówki muszą być ignorowane w trybie Vercel.
+  "x-forwarded-for": "198.51.100.250", "x-kadr-client-ip": "198.51.100.251"
+} : {
   "Content-Type": "application/json", "x-kadr-proxy-secret": process.env.TRUSTED_PROXY_SECRET!, "x-kadr-client-ip": ip
-});
+};
 export const input = (seatId = "F7", email = "ola@example.com", eventId = "orbita") => ({ eventId, seatId, customerName: "Aleksandra", email });
 export async function request(path: string, body?: unknown, ip?: string, server = base) {
   const response = await fetch(server + path, body === undefined ? { cache: "no-store" } : { method: "POST", headers: headers(ip), body: JSON.stringify(body) });

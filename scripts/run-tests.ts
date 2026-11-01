@@ -7,15 +7,20 @@ import { createDb } from "../src/server/db";
 import { seed } from "../prisma/seed";
 
 const mode = process.argv[2];
-if (!["api", "ttl120"].includes(mode)) throw new Error("Wybierz api albo ttl120.");
+if (!["api", "vercel", "ttl120"].includes(mode)) throw new Error("Wybierz api, vercel albo ttl120.");
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.endsWith("_test") || new URL(url).pathname === new URL(process.env.DATABASE_URL!).pathname) {
   throw new Error("Testy wymagają osobnej TEST_DATABASE_URL z nazwą bazy zakończoną _test, różną od bazy aplikacji.");
 }
 const env: NodeJS.ProcessEnv = {
-  ...process.env, DATABASE_URL: url, NODE_ENV: "production",
+  // Nadpisujemy oba URL-e: odziedziczony pooler produkcyjny nie może wyprowadzić testów poza bazę testową.
+  ...process.env, DATABASE_URL: url, DATABASE_URL_POOLED: url, NODE_ENV: "production",
   RESERVATION_TTL_SECONDS: mode === "ttl120" ? "120" : "3",
   TRUSTED_PROXY_SECRET: randomBytes(32).toString("hex"),
+  // Zwykłe testy lokalne nie mogą odziedziczyć zaufania do platformy z hosta CI.
+  VERCEL: mode === "vercel" ? "1" : "0",
+  VERCEL_ENV: mode === "vercel" ? "production" : "development",
+  TEST_PROXY_MODE: mode === "vercel" ? "vercel" : "nginx",
   TEST_BASE_URL: "http://127.0.0.1:3101", TEST_SECOND_URL: "http://127.0.0.1:3102"
 };
 const children: ChildProcess[] = [];
@@ -50,8 +55,8 @@ try {
   const db = createDb(url);
   try { await seed(db); } finally { await db.$disconnect(); }
   await start(3101);
-  if (mode === "api") await start(3102);
-  await run(["--import", "tsx", "--test", mode === "api" ? "tests/api.test.ts" : "tests/ttl120.test.ts"]);
+  if (mode !== "ttl120") await start(3102);
+  await run(["--import", "tsx", "--test", mode === "ttl120" ? "tests/ttl120.test.ts" : "tests/api.test.ts"]);
 } catch (e) {
   console.error(e instanceof Error ? e.message : "Błąd testów."); process.exitCode = 1;
 } finally {

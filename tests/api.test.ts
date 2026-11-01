@@ -157,7 +157,9 @@ test("Limiter czyści stare wpisy, odrzuca fałszywe proxy i nie ufa XFF", async
   await db.rateLimit.create({data:{key:"stale",attempts:1,expiresAt:new Date(Date.now()-120000)}});
   success(await reserve()); assert.equal(await db.rateLimit.count({where:{key:"stale"}}),0);
   const response=await fetch(base+"/api/reservations",{method:"POST",headers:{"Content-Type":"application/json","X-Forwarded-For":"8.8.8.8"},body:JSON.stringify(input("A1"))});
-  assert.equal(response.status,403);
+  assert.equal(response.status,process.env.TEST_PROXY_MODE === "vercel" ? 400 : 403);
+  const denied=await response.json();
+  assert.equal(denied.error.code,process.env.TEST_PROXY_MODE === "vercel" ? "INVALID_CLIENT_IP" : "PROXY_REQUIRED");
 });
 test("Baza wymusza jeden bilet, unikalny kod i zgodność właściciela z fotelem", async () => {
   const r=await reserve();success(r);success(await buy(r.data.reservationId));

@@ -39,10 +39,11 @@ Zatrzymanie baz bez usuwania danych: `docker compose --profile test stop`. Dane 
 | `POSTGRES_USER`           | Użytkownik PostgreSQL w Compose, np. `kadr`.                                                                                      |
 | `POSTGRES_PASSWORD`       | Hasło lokalnej bazy, wyłącznie w `.env` / magazynie sekretów.                                                                     |
 | `POSTGRES_DB`             | Nazwa bazy aplikacji, domyślnie `kadr`.                                                                                           |
-| `DATABASE_URL`            | Połączenie aplikacji; lokalnie port 54320.                                                                                        |
+| `DATABASE_URL`            | Bezpośrednie połączenie dla migracji i seeda; lokalnie port 54320. Aplikacja używa go, jeśli nie ustawiono poolera.                 |
+| `DATABASE_URL_POOLED`     | Opcjonalne połączenie przez pooler. Aplikacja używa go zamiast `DATABASE_URL`, gdy jest ustawione; integracja Prisma Postgres dodaje je na Vercel. |
 | `TEST_DATABASE_URL`       | Oddzielna baza `kadr_test`; lokalnie port 54321.                                                                                  |
 | `RESERVATION_TTL_SECONDS` | Dodatnia liczba całkowita 1–86400. Domyślnie **900**, w trybie testowym **120**.                                                 |
-| `TRUSTED_PROXY_SECRET`    | Opcjonalny sekret ≥32 znaki. Wymagany przez `deploy/compose.production.yaml`. Bez niego wszystkie lokalne żądania współdzielą jeden limit. |
+| `TRUSTED_PROXY_SECRET`    | Opcjonalny sekret ≥32 znaki dla własnego Nginx i `deploy/compose.production.yaml`. Nie jest potrzebny na Vercel. Lokalnie bez proxy wszystkie żądania współdzielą limit. |
 
 Konfiguracja jest sprawdzana Zodem przy uruchamianiu serwera przez `src/instrumentation.ts`. Błędny TTL lub niepoprawny URL uniemożliwiają poprawny start. Żadna zmienna z sekretem nie ma prefiksu `NEXT_PUBLIC_`. Plik `.env` jest ignorowany przez Git i Docker.
 
@@ -86,11 +87,13 @@ Przygotuj `.env` zgodnie z sekcją 2, w tym osobną `TEST_DATABASE_URL`, a nast�
 ```powershell
 docker compose --profile test up -d --wait
 npm test
+# Te same scenariusze API z symulowanym wejściem Vercel:
+npm run test:vercel
 # Osobno: rzeczywisty upływ 120 sekund (test trwa około 122 s).
 npm run test:120
 ```
 
-Wymagany jest produkcyjny build z poprzedniego bloku. `npm test` uruchamia 3 testy jednostkowe i 15 testów API. Runner API startuje dwie instancje serwera ze wspólną bazą i TTL 3 s; osobny `test:120` sprawdza TTL 120 s. Baza testowa jest oddzielna, z nazwą zakończoną `_test`; jej zawartość jest resetowana przez testy. Nie ma publicznych endpointów resetowania danych ani zmiany czasu.
+Wymagany jest produkcyjny build z poprzedniego bloku. `npm test` uruchamia 9 testów jednostkowych i 15 testów API. `npm run test:vercel` uruchamia te same 15 scenariuszy API, w tym B5, z serwerowym trybem Vercel i symulowanymi nagłówkami platformy. Oba zestawy startują dwie instancje ze wspólną bazą i TTL 3 s; osobny `test:120` sprawdza TTL 120 s. Zestawy uruchamiaj kolejno. Baza testowa jest oddzielna, z nazwą zakończoną `_test`; jej zawartość jest resetowana przez testy. Runner nadpisuje również `DATABASE_URL_POOLED` testowym adresem, aby nie użyć poolera produkcyjnego. Nie ma publicznych endpointów resetowania danych ani zmiany czasu.
 
 Playwright nie jest zależnością repozytorium. Dotychczasowe testy przeglądarkowe, ich konfiguracja i osobny runner `scripts/run-e2e.local.ts` pozostają wyłącznie lokalnie i są ignorowane. Instrukcja ich opcjonalnego uruchomienia jest w lokalnym `TESTING.local.md`. Wyniki wcześniejszej weryfikacji UI opisano w sekcji 8; testy jednostkowe i API nie zastępują sprawdzenia klikania w przeglądarce. Po sklonowaniu repozytorium lokalne pliki Playwright nie będą dostępne.
 
@@ -153,13 +156,15 @@ RateLimit (skrót adresu sieci, licznik, koniec okna)
 
 Limit: **20 prób utworzenia rezerwacji w 10 s na adres sieciowy**, stałe okno rozpoczynane pierwszą próbą. Także niepoprawne i powtórzone próby zużywają limit. Atomowy `INSERT … ON CONFLICT DO UPDATE` w PostgreSQL współdzieli licznik między procesami. Nadmiar daje 429 i całkowity `Retry-After` w sekundach, co najmniej 1. Inny adres ma osobny rekord. Po końcu okna nowa próba resetuje licznik.
 
-Przed każdą próbą usuwamy rekordy starsze niż minuta od końca okna, także przy 429. Tabela nie rośnie w spoczynku; pierwszy ruch po przerwie usuwa stare wpisy. Indeks na `expiresAt` wspiera sprzątanie. Domyślnie aplikacja ignoruje **wszystkie** przekazane nagłówki adresowe i używa wspólnego lokalnego kubełka.
+Przed każdą próbą usuwamy rekordy starsze niż minuta od końca okna, także przy 429. Tabela nie rośnie w spoczynku; pierwszy ruch po przerwie usuwa stare wpisy. Indeks na `expiresAt` wspiera sprzątanie. Lokalnie, poza Vercel i bez skonfigurowanego zaufanego proxy, aplikacja ignoruje przekazane nagłówki adresowe i używa wspólnego kubełka.
 
-Wdrożenie: ustaw losowy `TRUSTED_PROXY_SECRET` (co najmniej 32 znaki) w serwerze i zaufanym Nginx. Proxy **nadpisuje** `X-Kadr-Client-IP` wartością `$remote_addr` i `X-Kadr-Proxy-Secret` sekretem z konfiguracji. Aplikacja porównuje sekret w stałym czasie, wymaga pojedynczego poprawnego IP i nie korzysta z `X-Forwarded-For`. Samodzielnie wpisany przez klienta XFF nie zmienia limitu. Port aplikacji nie może być publicznie dostępny; w przygotowanym Compose dostępny jest tylko w sieci kontenerów. Adres w bazie limitera przechowujemy jako SHA-256.
+**Vercel:** gdy systemowe zmienne procesu mają `VERCEL=1` oraz `VERCEL_ENV=production` lub `preview`, limiter korzysta wyłącznie z `x-vercel-forwarded-for`, dostarczanego przez wejście Vercela. Platforma nadpisuje nagłówki IP na swoim wejściu. Sam nagłówek `x-vercel-id` ani przesłane w HTTP `VERCEL=1` nie włączają zaufania do platformy. Tryb lokalnego `vercel dev` nie jest traktowany jako zaufane wdrożenie. `X-Forwarded-For`, `X-Real-IP` i nagłówki KADR nie zmieniają klucza klienta w trybie Vercel. Brak poprawnego pojedynczego IP daje 400 zamiast wspólnego limitu dla wszystkich. Nie trzeba ustawiać `TRUSTED_PROXY_SECRET`.
+
+**Własny Nginx:** ustaw losowy `TRUSTED_PROXY_SECRET` (co najmniej 32 znaki) w serwerze i proxy. Nginx **nadpisuje** `X-Kadr-Client-IP` wartością `$remote_addr` i `X-Kadr-Proxy-Secret` sekretem z konfiguracji. Aplikacja porównuje sekret w stałym czasie i wymaga pojedynczego poprawnego IP. Samodzielnie wpisany przez klienta XFF nie zmienia limitu. Port aplikacji nie może być publicznie dostępny; w przygotowanym Compose dostępny jest tylko w sieci kontenerów. Adres w bazie limitera przechowujemy jako SHA-256.
 
 Konfiguracja: [deploy/nginx.conf.template](deploy/nginx.conf.template). Przy dodatkowym load balancerze Nginx musi ufać wyłącznie jego konkretnemu IP/CIDR przez `set_real_ip_from` i `real_ip_header`. Nie wolno globalnie ufać nagłówkom wszystkich klientów. Wiele osób za jednym NAT współdzieli limit — to świadoma konsekwencja limitowania według sieci bez kont.
 
-W B5 testy API symulują dwa adresy IP, przekazując poprawny sekret zaufanego proxy do dwóch lokalnych instancji aplikacji. Sprawdza to wspólny limiter i rozdzielenie klientów. Nie potwierdza konfiguracji Nginx ani rozpoznawania rzeczywistych sieci w docelowym wdrożeniu.
+W B5 testy API symulują dwa adresy IP na dwóch instancjach: standardowy zestaw używa sekretu Nginx, a `test:vercel` używa nagłówka Vercela i sprzecznych, niezaufanych nagłówków IP. Sprawdza to wspólny limiter i rozdzielenie klientów w obu trybach. Nie potwierdza działania wejścia Nginx ani Vercel z rzeczywistym ruchem internetowym.
 
 ## 8. Kryteria — rzeczywiste wyniki
 
@@ -179,7 +184,9 @@ Weryfikacja lokalna: **1 listopada 2026**, Windows, Node 22.14.0, PostgreSQL 17 
 | C3        | Losowy nieistniejący UUID i `abc`: 404/400, brak biletu                                         | PASS                                       |
 | C4        | Odmowa po TTL, trwały zakup i powtórzony kod po TTL 3 s; osobno prawdziwe 120 s                 | PASS, również po 122 s rzeczywistego czasu |
 
-Wykonane zestawy: TypeScript PASS, build PASS, jednostkowe **3/3**, API **15/15**, rzeczywisty TTL 120 s **1/1**. Przekazany wynik uruchomienia z 1 listopada 2026 potwierdza build, 3 testy jednostkowe, 15 testów API i test upływu 120 s; wszystkie zakończyły się sukcesem. Testy przeglądarkowe **5/5** wykonano wcześniej lokalnie i nie są częścią `npm test` ani repozytorium. Zbudowano też lokalne obrazy Docker na Linux/Alpine i sprawdzono szablon Compose przez `config --quiet`; nie oznacza to wdrożenia. Dodatkowe testy sprawdzają czas po oczekiwaniu na blokadę, integralność bazy, seed bez utraty danych, dwie instancje oraz ponowienia po awarii sieci.
+Po dostosowaniu do Vercela wykonano: TypeScript PASS, build PASS, jednostkowe **9/9**, API w trybie Nginx **15/15**, API w symulowanym trybie Vercel **15/15**. Polecenie `npm run vercel-build` również przeszło lokalnie z adresem osobnej bazy testowej: generowanie klienta, `migrate deploy` (brak oczekujących migracji), seed i build. Nie uruchamiano go przeciwko zdalnej bazie Prisma Postgres.
+
+Wcześniejsze sprawdzenie rzeczywistego TTL 120 s dało **1/1**; przekazany log potwierdzał również ówczesne 3 testy jednostkowe i 15 testów API. Testy przeglądarkowe **5/5** wykonano wcześniej lokalnie i nie są częścią `npm test` ani repozytorium. Zbudowano też lokalne obrazy Docker na Linux/Alpine i sprawdzono szablon Compose przez `config --quiet`; nie oznacza to wdrożenia. Dodatkowe testy sprawdzają czas po oczekiwaniu na blokadę, integralność bazy, seed bez utraty danych, dwie instancje oraz ponowienia po awarii sieci.
 
 Nie weryfikowano wdrożenia na publicznym serwerze, certyfikatów TLS, fizycznej drukarki ani innych przeglądarek niż Chromium. Sprawdzenie widoków obejmuje 1440 px oraz 390 i 320 px. Zrzuty desktop/mobile i wydruku obejrzano lokalnie.
 
@@ -204,3 +211,16 @@ Warunek wstępny nauczyciela wymaga działających endpointów **pod adresem fir
 Karty A/B/C działają na stronie `/`: wybór seansu i fotela → formularz → licznik → bilet. Między widokami przekazywane są obiekt seansu i tekstowy `seatId`, następnie `reservationId` i `expiresAt`, a po zakupie `code`. Typy publiczne są w `src/lib/types.ts`. Implementacja pozostaje w etapie I.
 
 Dokumentacja użyta przy doborze konfiguracji: [Next.js — instalacja](https://nextjs.org/docs/app/getting-started/installation), [Prisma ORM 7 — adapter i konfiguracja](https://www.prisma.io/docs/orm/v7).
+
+## 10. Vercel i Prisma Postgres
+
+1. Połącz bazę Prisma Postgres z projektem Vercel w środowisku **Production**. Integracja dodaje `DATABASE_URL` (bezpośredni, dla migracji i seeda) oraz `DATABASE_URL_POOLED` (pooler, dla aplikacji). Oba muszą być adresami `postgres://` lub `postgresql://`. Nie podmieniaj ich lokalnymi adresami Dockera ani adresem `prisma+postgres://`.
+2. Dodaj `RESERVATION_TTL_SECONDS=120` w Production. Nie dodawaj lokalnych `POSTGRES_*`, `TEST_DATABASE_URL` ani `TRUSTED_PROXY_SECRET`. Dodatkowe aliasy utworzone przez integrację mogą pozostać — kod ich nie wymaga.
+3. Zostaw włączony dostęp do **System Environment Variables** w ustawieniach Vercela. Platforma sama dostarcza `VERCEL` i `VERCEL_ENV`; nie wpisuj ich ręcznie do lokalnego `.env`. Limiter wybierze tryb Vercel automatycznie.
+4. Plik `vercel.json` ustawia Build Command na `npm run vercel-build`. Polecenie generuje klienta Prisma, wykonuje `prisma migrate deploy`, dodaje dane przez powtarzalny seed i buduje Next.js. Migracja nie tworzy nowego projektu ani nowego pliku migracji; seed zachowuje istniejące rezerwacje i bilety. Nie uruchamiaj ponownie `create-next-app` ani `migrate dev --name init` z ogólnego quickstartu integracji.
+5. Po wysłaniu zmian do GitHub uruchom wdrożenie lub redeploy z aktualnego commita. Istniejący deployment nie otrzymuje nowych zmiennych bez ponownego wdrożenia. Jeżeli włączysz Preview, skonfiguruj mu osobną bazę i zmienne; nie kieruj prób Preview do bazy używanej przez nauczyciela.
+6. Po wdrożeniu sprawdź `GET /api/events` (3 seanse), rezerwację z terminem około 120 s, zakup z kodem oraz rozdzielenie limitów z dwóch rzeczywistych sieci. Sprawdź dostęp do adresu bez zalogowania do Vercela — tester nauczyciela musi móc wywołać API.
+
+Ta konfiguracja została przygotowana w kodzie. Nie oznacza to, że zdalna baza lub wdrożenie zostały już zweryfikowane; migracja i seed wykonają się przy Twoim buildzie z danymi dostępowymi integracji.
+
+Źródła konfiguracji wdrożenia: [Prisma Postgres na Vercel](https://www.prisma.io/docs/guides/postgres/vercel), [nagłówki Vercel](https://vercel.com/docs/headers/request-headers), [systemowe zmienne środowiskowe](https://vercel.com/docs/environment-variables/system-environment-variables).
