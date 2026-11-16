@@ -11,7 +11,7 @@ export async function seed(db: PrismaClient) {
   ];
   for (const event of events) {
     // Nie zmieniamy istniejących seansów ani żadnych rezerwacji/biletów.
-    await db.event.upsert({ where: { id: event.id }, create: event, update: {} });
+    await db.event.upsert({ where: { id: event.id }, create: { ...event, price: 3200 }, update: {} });
     await db.eventSeat.createMany({ data: Array.from("ABCDEFGH").flatMap((row) => Array.from({ length: 10 }, (_, i) => ({ eventId: event.id, seatId: `${row}${i + 1}` }))), skipDuplicates: true });
   }
 }

@@ -16,6 +16,15 @@ export async function handle(action: () => Promise<Response>) {
 }
 export async function readReservationInput(request: Request) {
   if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) throw new ApiError(415, "JSON_REQUIRED", "Wyślij dane jako application/json.");
+  let body: unknown;
+  const raw = await readRawBody(request, 4096);
+  try { body = JSON.parse(raw); }
+  catch { throw new ApiError(400, "INVALID_JSON", "Niepoprawny JSON."); }
+  const parsed = reservationInput.safeParse(body);
+  if (!parsed.success) throw new ApiError(400, "INVALID_INPUT", "Podaj poprawny seans, fotel, imię i adres e-mail.");
+  return parsed.data;
+}
+export async function readRawBody(request: Request, limit: number) {
   // Ograniczenie także dla żądań chunked, bez wiary w Content-Length.
   const reader = request.body?.getReader();
   if (!reader) throw new ApiError(400, "INVALID_JSON", "Brak danych JSON.");
@@ -26,14 +35,9 @@ export async function readReservationInput(request: Request) {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > 4096) { await reader.cancel(); throw new ApiError(413, "BODY_TOO_LARGE", "Żądanie jest za duże."); }
+      if (size > limit) { await reader.cancel(); throw new ApiError(413, "BODY_TOO_LARGE", "Żądanie jest za duże."); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
-  let body: unknown;
-  try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { throw new ApiError(400, "INVALID_JSON", "Niepoprawny JSON."); }
-  const parsed = reservationInput.safeParse(body);
-  if (!parsed.success) throw new ApiError(400, "INVALID_INPUT", "Podaj poprawny seans, fotel, imię i adres e-mail.");
-  return parsed.data;
+  return Buffer.concat(chunks).toString("utf8");
 }

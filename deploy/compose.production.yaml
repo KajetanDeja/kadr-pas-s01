@@ -19,6 +19,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kadr}
       RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
       TRUSTED_PROXY_SECRET: ${TRUSTED_PROXY_SECRET:?Ustaw sekret proxy minimum 32 znaki}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:?Ustaw testowy klucz Stripe}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?Ustaw sekret webhooka}
+      APP_URL: ${APP_URL:?Ustaw publiczny adres HTTPS}
     depends_on:
       db: { condition: service_healthy }
     restart: unless-stopped

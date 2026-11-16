@@ -17,6 +17,7 @@ model Event {
   startsAt     DateTime      @db.Timestamptz(3)
   hall         String
   artwork      String
+  price        Int
   seats        EventSeat[]
   reservations Reservation[]
 }
@@ -38,12 +39,14 @@ model Reservation {
   customerName String
   email        String
   fingerprint  String
+  amount       Int
   createdAt    DateTime  @db.Timestamptz(3)
   expiresAt    DateTime  @db.Timestamptz(3)
   event        Event     @relation(fields: [eventId], references: [id], onDelete: Restrict)
   seat         EventSeat @relation("SeatHistory", fields: [eventId, seatId], references: [eventId, seatId], onDelete: Restrict)
   ownedSeat    EventSeat? @relation("CurrentOwner")
   ticket       Ticket?
+  payments     PaymentAttempt[]
   @@unique([id, eventId, seatId])
   @@index([eventId, seatId, expiresAt])
 }
@@ -65,4 +68,25 @@ model RateLimit {
   attempts  Int
   expiresAt DateTime @db.Timestamptz(3)
   @@index([expiresAt])
+}
+
+model PaymentAttempt {
+  id              String      @id @db.Uuid
+  reservationId   String      @db.Uuid
+  generation      Int
+  request         Json
+  sessionId       String?     @unique
+  paymentIntentId String?     @unique
+  url             String?
+  state           String      @default("creating")
+  refundId        String?     @unique
+  refundStatus    String?
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+  reservation     Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  @@unique([reservationId, generation])
+}
+
+model StripeEvent {
+  id          String   @id
+  processedAt DateTime @default(now()) @db.Timestamptz(3)
 }

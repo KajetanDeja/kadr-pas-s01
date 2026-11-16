@@ -3,8 +3,25 @@ import assert from "node:assert/strict";
 import { parseConfig } from "../src/server/config";
 import { clientKey, isVercelDeployment } from "../src/server/rate-limit";
 import { fingerprint, reservationInput } from "../src/server/validation";
+import { readRawBody } from "../src/server/http";
 
 const env = { DATABASE_URL: "postgresql://test:test@localhost:5432/test" };
+test("Stripe: tylko klucze testowe, poprawne sekrety i zaufany origin bez ścieżki", () => {
+  assert.equal(parseConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_example", STRIPE_WEBHOOK_SECRET: "whsec_example", APP_URL: "https://kino.example" }).APP_URL, "https://kino.example");
+  for (const STRIPE_SECRET_KEY of ["sk_live_example", "pk_test_example", "sk_test_"]) {
+    assert.throws(() => parseConfig({ ...env, STRIPE_SECRET_KEY }), (e) => e instanceof Error && !e.message.includes(STRIPE_SECRET_KEY));
+  }
+  assert.throws(() => parseConfig({ ...env, STRIPE_WEBHOOK_SECRET: "wrong" }));
+  for (const APP_URL of ["http://kino.example", "https://user:pass@kino.example", "https://kino.example/path", "https://kino.example?redirect=bad", "ftp://localhost"]) {
+    assert.throws(() => parseConfig({ ...env, APP_URL }));
+  }
+  assert.equal(parseConfig({ ...env, APP_URL: "http://127.0.0.1:3000" }).APP_URL, "http://127.0.0.1:3000");
+});
+test("Webhook: surowe body pozostaje identyczne, limit działa bez Content-Length", async () => {
+  const raw = ' { "text": "Zażółć" }\n';
+  assert.equal(await readRawBody(new Request("https://kino.example", { method: "POST", body: raw }), 100), raw);
+  await assert.rejects(() => readRawBody(new Request("https://kino.example", { method: "POST", body: "x".repeat(101) }), 100), { status: 413 });
+});
 test("Konfiguracja: domyślnie 900 s, szkolnie 120 s, niepoprawne wartości odrzucone", () => {
   assert.equal(parseConfig(env).RESERVATION_TTL_SECONDS, 900);
   assert.equal(parseConfig({...env, RESERVATION_TTL_SECONDS: "120"}).RESERVATION_TTL_SECONDS, 120);

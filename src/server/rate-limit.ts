@@ -28,8 +28,8 @@ export function clientKey(headers: Headers, secret?: string, vercelDeployment = 
   return createHash("sha256").update(client).digest("hex");
 }
 
-export async function limitReservation(headers: Headers) {
-  const key = clientKey(headers, config().TRUSTED_PROXY_SECRET, isVercelDeployment());
+export async function limitReservation(headers: Headers, scope = "reservation") {
+  const key = `${scope}:${clientKey(headers, config().TRUSTED_PROXY_SECRET, isVercelDeployment())}`;
   // Usuwanie oportunistyczne, również po 429. W spoczynku tabela nie rośnie.
   await db().$executeRaw`DELETE FROM "RateLimit" WHERE "expiresAt" < clock_timestamp() - interval '1 minute'`;
   const [bucket] = await db().$queryRaw<{ attempts: number; retry: number }[]>`

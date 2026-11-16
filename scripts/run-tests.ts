@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createDb } from "../src/server/db";
 import { seed } from "../prisma/seed";
+import { startFakeStripe } from "../tests/fake-stripe";
 
 const mode = process.argv[2];
 if (!["api", "vercel", "ttl120"].includes(mode)) throw new Error("Wybierz api, vercel albo ttl120.");
@@ -21,7 +22,8 @@ const env: NodeJS.ProcessEnv = {
   VERCEL: mode === "vercel" ? "1" : "0",
   VERCEL_ENV: mode === "vercel" ? "production" : "development",
   TEST_PROXY_MODE: mode === "vercel" ? "vercel" : "nginx",
-  TEST_BASE_URL: "http://127.0.0.1:3101", TEST_SECOND_URL: "http://127.0.0.1:3102"
+  TEST_BASE_URL: "http://127.0.0.1:3101", TEST_SECOND_URL: "http://127.0.0.1:3102",
+  STRIPE_SECRET_KEY: "sk_test_automated", STRIPE_WEBHOOK_SECRET: "whsec_automated", APP_URL: "http://127.0.0.1:3101"
 };
 const children: ChildProcess[] = [];
 function run(args: string[]) {
@@ -41,7 +43,7 @@ async function freePort(port: number) {
 }
 async function start(port: number) {
   await freePort(port);
-  const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], { env, stdio: "inherit", windowsHide: true });
+  const child = spawn(process.execPath, ["--import", "./tests/stripe-preload.mjs", "node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], { env, stdio: "inherit", windowsHide: true });
   children.push(child);
   for (let i = 0; i < 80; i++) {
     if (child.exitCode !== null) throw new Error("Serwer testowy nie wystartował.");
@@ -50,15 +52,18 @@ async function start(port: number) {
   }
   throw new Error("Przekroczono czas uruchamiania serwera testowego.");
 }
+let fakeStripe: Awaited<ReturnType<typeof startFakeStripe>> | undefined;
 try {
   await run(["node_modules/prisma/build/index.js", "migrate", "deploy"]);
   const db = createDb(url);
   try { await seed(db); } finally { await db.$disconnect(); }
+  fakeStripe = await startFakeStripe();
   await start(3101);
   if (mode !== "ttl120") await start(3102);
-  await run(["--import", "tsx", "--test", mode === "ttl120" ? "tests/ttl120.test.ts" : "tests/api.test.ts"]);
+  await run(["--import", "tsx", "--test", ...(mode === "ttl120" ? ["tests/ttl120.test.ts"] : ["--test-concurrency=1", "tests/api.test.ts", "tests/payments.test.ts"])]);
 } catch (e) {
   console.error(e instanceof Error ? e.message : "Błąd testów."); process.exitCode = 1;
 } finally {
   for (const child of children) if (child.exitCode === null) child.kill();
+  fakeStripe?.closeAllConnections(); fakeStripe?.close();
 }

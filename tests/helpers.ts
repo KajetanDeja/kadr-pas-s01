@@ -1,6 +1,8 @@
 import { createDb } from "../src/server/db";
 import { setTimeout as sleep } from "node:timers/promises";
 import assert from "node:assert/strict";
+import Stripe from "stripe";
+import { randomUUID } from "node:crypto";
 
 if (!process.env.DATABASE_URL || !new URL(process.env.DATABASE_URL).pathname.endsWith("_test")) throw new Error("Odmowa: to nie jest baza testowa.");
 export const db = createDb(process.env.DATABASE_URL);
@@ -20,12 +22,34 @@ export async function request(path: string, body?: unknown, ip?: string, server 
   return { response, data, status: response.status };
 }
 export const reserve = (data = input(), ip?: string, server = base) => request("/api/reservations", data, ip, server);
-export const buy = (id: string, server = base) => request(`/api/reservations/${id}/purchase`, {}, undefined, server);
+export async function webhook(event: unknown, server = base, secret = process.env.STRIPE_WEBHOOK_SECRET!) {
+  const payload = JSON.stringify(event);
+  const signature = Stripe.webhooks.generateTestHeaderString({ payload, secret });
+  const response = await fetch(server + "/api/webhooks/stripe", { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": signature }, body: payload });
+  return { response, status: response.status, data: await response.json() };
+}
+export function completed(session: Record<string, unknown>, eventId = `evt_${randomUUID()}`) {
+  return { id: eventId, object: "event", livemode: false, type: "checkout.session.completed", data: { object: { ...session, status: "complete", payment_status: "paid", payment_intent: `pi_${session.id}` } } };
+}
+// Regresje etapu I kupują przez podpisany webhook, nie przez furtkę /purchase.
+export async function buy(id: string, server = base) {
+  if (/^[0-9a-f-]{36}$/i.test(id)) {
+    const r = await db.reservation.findUnique({ where: { id }, include: { ticket: true } });
+    if (r && !r.ticket) {
+      const attempt = await db.paymentAttempt.upsert({ where: { reservationId_generation: { reservationId: id, generation: 1 } }, create: { id: randomUUID(), reservationId: id, generation: 1, request: {}, state: "open", sessionId: `cs_test_${id}` }, update: { request: {} } });
+      success(await webhook(completed({ id: attempt.sessionId, object: "checkout.session", livemode: false, mode: "payment", client_reference_id: id, amount_total: r.amount, currency: "pln" }, `evt_paid_${id}`), server));
+    }
+  }
+  return request(`/api/reservations/${id}/purchase`, {}, undefined, server);
+}
 export async function reset() {
   await db.ticket.deleteMany();
+  await db.stripeEvent.deleteMany();
+  await db.paymentAttempt.deleteMany();
   await db.eventSeat.updateMany({ data: { currentReservationId: null } });
   await db.reservation.deleteMany();
   await db.rateLimit.deleteMany();
+  await fetch("http://127.0.0.1:3103/__reset", { method: "POST" });
 }
 export async function waitUntil(iso: string, offsetMs = 50) {
   const [row] = await db.$queryRaw<{now: Date}[]>`SELECT clock_timestamp() AS now`;

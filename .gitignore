@@ -25,6 +25,7 @@ node_modules/
 /tests/browser/
 /scripts/*
 !/scripts/run-tests.ts
+!/scripts/stripe-listen.mjs
 /playwright.config.ts
 /TESTING.local.md
 /test-results/

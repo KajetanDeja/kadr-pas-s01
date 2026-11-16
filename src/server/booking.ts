@@ -10,7 +10,7 @@ export async function databaseNow(tx: Tx = db()) {
   const [row] = await tx.$queryRaw<{ now: Date }[]>`SELECT clock_timestamp() AS now`;
   return row.now;
 }
-async function lockSeat(tx: Tx, eventId: string, seatId: string) {
+export async function lockSeat(tx: Tx, eventId: string, seatId: string) {
   const seats = await tx.$queryRaw<{ currentReservationId: string | null }[]>`
     SELECT "currentReservationId" FROM "EventSeat"
     WHERE "eventId" = ${eventId} AND "seatId" = ${seatId} FOR UPDATE
@@ -18,7 +18,7 @@ async function lockSeat(tx: Tx, eventId: string, seatId: string) {
   if (!seats[0]) throw new ApiError(404, "SEAT_NOT_FOUND", "Nie znaleziono seansu lub fotela.");
   return seats[0];
 }
-const transactionOptions = { maxWait: 10000, timeout: 15000 };
+export const transactionOptions = { maxWait: 10000, timeout: 15000 };
 
 export async function reserve(input: ReservationInput) {
   const ttl = config().RESERVATION_TTL_SECONDS;
@@ -30,15 +30,16 @@ export async function reserve(input: ReservationInput) {
     if (seat.currentReservationId) {
       const current = await tx.reservation.findUniqueOrThrow({ where: { id: seat.currentReservationId }, include: { ticket: true } });
       if (current.ticket || current.expiresAt > now) {
-        if (current.fingerprint === identity) return { reservationId: current.id, expiresAt: current.expiresAt.toISOString(), serverNow: now };
+        if (current.fingerprint === identity) return { reservationId: current.id, expiresAt: current.expiresAt.toISOString(), amount: current.amount, serverNow: now };
         throw new ApiError(409, "SEAT_TAKEN", "Ktoś właśnie zajął ten fotel. Wybierz inne miejsce.");
       }
     }
+    const event = await tx.event.findUniqueOrThrow({ where: { id: input.eventId } });
     const reservation = await tx.reservation.create({ data: {
-      ...input, id: randomUUID(), fingerprint: identity, createdAt: now, expiresAt: new Date(now.getTime() + ttl * 1000)
+      ...input, id: randomUUID(), fingerprint: identity, amount: event.price, createdAt: now, expiresAt: new Date(now.getTime() + ttl * 1000)
     } });
     await tx.eventSeat.update({ where: { eventId_seatId: { eventId: input.eventId, seatId: input.seatId } }, data: { currentReservationId: reservation.id } });
-    return { reservationId: reservation.id, expiresAt: reservation.expiresAt.toISOString(), serverNow: now };
+    return { reservationId: reservation.id, expiresAt: reservation.expiresAt.toISOString(), amount: reservation.amount, serverNow: now };
   }, transactionOptions);
 }
 
@@ -52,11 +53,7 @@ export async function purchase(id: string) {
     // Zakupione bilety pozostają idempotentne bez względu na pierwotny expiresAt.
     if (existing) return { code: existing.code, serverNow: now };
     if (seat.currentReservationId !== id || original.expiresAt <= now) throw new ApiError(410, "RESERVATION_EXPIRED", "Rezerwacja wygasła, fotel wrócił do puli");
-    const ticket = await tx.ticket.create({ data: {
-      id: randomUUID(), reservationId: id, eventId: original.eventId, seatId: original.seatId,
-      code: `KADR-${randomUUID().replaceAll("-", "").toUpperCase()}`, purchasedAt: now
-    } });
-    return { code: ticket.code, serverNow: now };
+    throw new ApiError(402, "PAYMENT_REQUIRED", "Opłać rezerwację kartą przez Stripe.");
   }, transactionOptions);
 }
 
@@ -74,12 +71,14 @@ export async function getEvent(id: string) {
 }
 
 export async function getReservation(id: string) {
-  const r = await db().reservation.findUnique({ where: { id }, include: { event: true, ticket: true, ownedSeat: true } });
+  const r = await db().reservation.findUnique({ where: { id }, include: { event: true, ticket: true, ownedSeat: true, payments: { where: { refundStatus: { not: null } }, orderBy: { generation: "desc" }, take: 1 } } });
   if (!r) throw new ApiError(404, "RESERVATION_NOT_FOUND", "Nie znaleziono rezerwacji.");
   const now = await databaseNow();
   return {
     reservationId: r.id, event: r.event, seatId: r.seatId, expiresAt: r.expiresAt.toISOString(),
-    status: r.ticket ? "purchased" : r.ownedSeat && r.expiresAt > now ? "active" : "expired",
-    code: r.ticket?.code ?? null, serverNow: now.toISOString()
+    amount: r.amount,
+    status: r.ticket ? "paid" : r.ownedSeat && r.expiresAt > now ? "held" : "expired",
+    ...(r.ticket ? { code: r.ticket.code } : {}),
+    ...(r.payments[0] ? { refundStatus: r.payments[0].refundStatus } : {}), serverNow: now.toISOString()
   };
 }

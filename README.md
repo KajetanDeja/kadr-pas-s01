@@ -1,226 +1,177 @@
-# KADR — PAS S01, etap I
+# KADR — PAS S01, etap II
 
-Kompletna kasa kina: repertuar → fotel → rezerwacja → zakup → bilet do wydruku. Jedna rezerwacja obejmuje jeden fotel na jednym seansie. Bez kont, panelu administratora i płatności online.
+Kasa kina: repertuar i cena → fotel → rezerwacja → Stripe Checkout → potwierdzenie webhookiem → bilet do wydruku. Jedna rezerwacja obejmuje jeden fotel na jednym seansie. Wyłącznie płatności testowe, bez prawdziwych pieniędzy.
 
-Projekt lokalny: Next.js App Router i Route Handlers, TypeScript, PostgreSQL 17, Prisma 7 z adapterem PostgreSQL, Tailwind CSS 4 i Zod 4. Konkretne wersje zapisano w `package-lock.json`. Nazwa KADR pochodzi z dostarczonego promptu. Filmy i ilustracje są fikcyjnymi danymi demonstracyjnymi.
+Stos: Next.js App Router, TypeScript, PostgreSQL 17, Prisma 7, React, Tailwind CSS, Zod i oficjalny SDK Stripe. Wersje są przypięte w package-lock.json. Node.js: **22.12+ z linii 22 lub 24+**; Prisma nie obsługuje Node 23. Filmy i ilustracje są fikcyjne.
 
-## 1. Uruchomienie od zera
+## Uruchomienie lokalne
 
-Wymagania: Node.js **22.12 lub nowszy**, npm oraz uruchomiony Docker Desktop z kontenerami Linux. Komendy poniżej są dla **PowerShell**.
+Wymagania: Node.js, npm, działający Docker Desktop. Skopiuj .env.example do .env tylko wtedy, gdy nie masz własnego pliku. Ustaw losowe POSTGRES_PASSWORD i to samo hasło w obu adresach bazy. Nie publikuj .env.
 
-```powershell
-cd 'C:\projekt PAS'
-if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
-# W .env ustaw POSTGRES_PASSWORD i to samo hasło w obu URL-ach.
-# Najprościej użyć hasła z liter i cyfr; znaki specjalne w URL wymagają kodowania.
+```sh
+cp .env.example .env
 npm ci
-docker compose up -d --wait db
-npm run db:generate
-npm run db:migrate
-npm run db:seed
-npm run dev
-```
-
-Otwórz **http://127.0.0.1:3000**. Jeśli `.env` już istnieje, zachowaj go; nie kopiuj ponownie przykładu. W dostarczonym środowisku `.env`, zależności, migracja i seed zostały już przygotowane.
-
-Tryb produkcyjny lokalnie:
-
-```powershell
-npm run build
-npm start
-```
-
-Zatrzymanie baz bez usuwania danych: `docker compose --profile test stop`. Dane aplikacji są w woluminie `kadr-data`. Testowa baza jest ulotna i całkowicie osobna. Projekt używa portów **54320** i **54321**, ponieważ port 5432 był zablokowany na tym komputerze.
-
-## 2. Zmienne środowiskowe
-
-| Zmienna                   | Znaczenie                                                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_USER`           | Użytkownik PostgreSQL w Compose, np. `kadr`.                                                                                      |
-| `POSTGRES_PASSWORD`       | Hasło lokalnej bazy, wyłącznie w `.env` / magazynie sekretów.                                                                     |
-| `POSTGRES_DB`             | Nazwa bazy aplikacji, domyślnie `kadr`.                                                                                           |
-| `DATABASE_URL`            | Bezpośrednie połączenie dla migracji i seeda; lokalnie port 54320. Aplikacja używa go, jeśli nie ustawiono poolera.                 |
-| `DATABASE_URL_POOLED`     | Opcjonalne połączenie przez pooler. Aplikacja używa go zamiast `DATABASE_URL`, gdy jest ustawione; integracja Prisma Postgres dodaje je na Vercel. |
-| `TEST_DATABASE_URL`       | Oddzielna baza `kadr_test`; lokalnie port 54321.                                                                                  |
-| `RESERVATION_TTL_SECONDS` | Dodatnia liczba całkowita 1–86400. Domyślnie **900**, w trybie testowym **120**.                                                 |
-| `TRUSTED_PROXY_SECRET`    | Opcjonalny sekret ≥32 znaki dla własnego Nginx i `deploy/compose.production.yaml`. Nie jest potrzebny na Vercel. Lokalnie bez proxy wszystkie żądania współdzielą limit. |
-
-Konfiguracja jest sprawdzana Zodem przy uruchamianiu serwera przez `src/instrumentation.ts`. Błędny TTL lub niepoprawny URL uniemożliwiają poprawny start. Żadna zmienna z sekretem nie ma prefiksu `NEXT_PUBLIC_`. Plik `.env` jest ignorowany przez Git i Docker.
-
-Przed szkolnym sprawdzaniem ustaw `RESERVATION_TTL_SECONDS=120` na docelowym serwerze i uruchom ponownie aplikację. Lokalnie możesz włączyć ten tryb dla procesu bez zmiany `.env`:
-
-```powershell
-$env:RESERVATION_TTL_SECONDS = '120'
-npm run dev
-```
-
-Jeżeli serwer już działa, zatrzymaj go najpierw przez Ctrl+C. Zmiana TTL dotyczy nowych rezerwacji. Standardowy czas rezerwacji wynosi 900 s, czyli 15 minut. Testy uruchamiane przez runner ustawiają własny TTL i nie zmieniają `.env` ani ustawienia działającej aplikacji.
-
-## 3. Docker, migracje i seed
-
-```powershell
 docker compose --profile test up -d --wait
 npm run db:generate
 npm run db:migrate
 npm run db:seed
+npm run dev
 ```
 
-Migracja `prisma/migrations/202611010001_init/migration.sql` tworzy tabele, indeksy, klucze obce, ograniczenia kontrolne i dodatkową zgodność właściciela z konkretnym fotelem. Używaj `migrate deploy`, a nie `db push`, aby zachować również dodatkowe ograniczenia SQL.
+W PowerShell kopiowanie: `Copy-Item .env.example .env`. Pozostałe polecenia działają tak samo. Aplikacja: **http://127.0.0.1:3000**. Zwykła baza jest na porcie 54320, osobna baza testowa na 54321. Zatrzymanie bez usuwania danych: `docker compose --profile test stop`.
 
-Seed dodaje 3 seanse w 2 salach (6 listopada 2026), każdy z 80 fotelami A1–H10. Dwa seanse korzystają z tej samej sali, ale mają niezależną zajętość. `upsert` z pustym `update` i `createMany(skipDuplicates)` sprawiają, że ponowienie **nie usuwa ani nie nadpisuje** istniejących rezerwacji, biletów i dat seansów. Po czasie przykładowego repertuaru można dodać nowe seanse z nowymi ID w seedzie; etap I nie wprowadza ograniczenia zakupu na podstawie daty seansu.
+Bez konfiguracji Stripe repertuar i rezerwacje działają; próby Checkout i webhook zwracają 503. Nie istnieje zastępczy zakup bez zapłaty.
 
-## 4. Zakres repozytorium i testy
+## Konfiguracja i Stripe
 
-Repozytorium zawiera pliki potrzebne do instalacji, budowania i uruchamiania aplikacji: źródła, manifest i lockfile, migracje, seed, konfigurację Next.js/TypeScript/Tailwind/Prisma, Compose, Dockerfile, konfigurację proxy oraz instrukcję uruchomienia.
+| Zmienna | Znaczenie |
+|---|---|
+| POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB | Lokalny Compose; domyślna nazwa bazy kadr. |
+| DATABASE_URL | Bezpośredni adres PostgreSQL dla migracji, seeda i aplikacji. |
+| DATABASE_URL_POOLED | Opcjonalny pooler TCP preferowany przez aplikację; CLI używa połączenia bezpośredniego. |
+| TEST_DATABASE_URL | Osobna, resetowana przez testy baza z nazwą zakończoną _test. |
+| RESERVATION_TTL_SECONDS | 1–86400, domyślnie 900; do szkolnego sprawdzenia **120**. |
+| STRIPE_SECRET_KEY | Wyłącznie sk_test_…, po stronie serwera. Klucze live i publishable są odrzucane. |
+| STRIPE_WEBHOOK_SECRET | Sekret podpisu whsec_…; inny lokalnie dla CLI i dla endpointu na Vercel. |
+| APP_URL | Stały origin sklepu bez ścieżki/query, np. https://twoje-kino.vercel.app. Lokalnie http://127.0.0.1:3000. |
+| TRUSTED_PROXY_SECRET | Tylko dla własnego Nginx, minimum 32 znaki; na Vercel zbędny. |
 
-Repozytorium zawiera testy jednostkowe i API: `tests/unit.test.ts`, `tests/api.test.ts`, `tests/ttl120.test.ts`, `tests/helpers.ts` oraz runner `scripts/run-tests.ts`. Korzystają z wbudowanego `node:test`, istniejącego `tsx` i prawdziwego PostgreSQL. Nie wymagają Playwright ani instalacji przeglądarki.
+Sekrety nie mają prefiksu NEXT_PUBLIC_. Hosted Checkout nie wymaga klucza publishable ani Stripe.js w przeglądarce. Konfiguracja sprawdzana jest przy starcie; komunikaty walidacji nie zawierają wartości sekretów. Wszystkie trzy zmienne płatności są wymagane, aby płatności były dostępne.
 
-```powershell
-npm ci
-npm run db:generate
+1. Załóż własne konto Stripe lub wybierz Sandbox. Wpisz klucz jako STRIPE_SECRET_KEY=sk_test_… do lokalnego .env.
+2. Zainstaluj [Stripe CLI](https://docs.stripe.com/stripe-cli) i wykonaj:
+
+```sh
+npm install -g @stripe/cli
+npm run stripe:listen
+```
+
+3. Skrypt używa klucza z .env, uruchamia lokalne przekazywanie webhooków i sam zapisuje STRIPE_WEBHOOK_SECRET, ukrywając go w logach. Nie wymaga stripe login. Ustaw APP_URL=http://127.0.0.1:3000 i dopiero po komunikacie „Webhook gotowy” uruchom lub zrestartuj aplikację w drugim terminalu. Pozostaw listener działający podczas płacenia. Sekret CLI dotyczy wyłącznie lokalnego serwera; na Vercel potrzebny jest sekret publicznego endpointu.
+4. Rezerwuj fotel, kliknij „Zapłać 32 zł” i płać na stronie Stripe. Sam powrót na stronę sukcesu nie wystawia biletu.
+
+| Karta testowa | Wynik |
+|---|---|
+| 4242 4242 4242 4242 | Sukces |
+| 4000 0000 0000 0002 | Odmowa |
+| 4000 0025 0000 3155 | Dodatkowe potwierdzenie 3D Secure |
+
+Data ważności: przyszła, CVC: trzy dowolne cyfry. Odmowa pozostaje na Stripe; klient może poprawić kartę. Anulowanie wraca do ważnej rezerwacji i pozwala ponowić Checkout bez wydłużania TTL.
+
+## Kontrakt API i połączenie kart A/B/C
+
+Typy publiczne: src/lib/types.ts. Każdy seans ma jedną cenę fotela price w groszach. Nowe dane demonstracyjne kosztują 3200 groszy. amount to cena skopiowana w chwili rezerwacji; zmiana ceny wydarzenia nie zmienia istniejącej rezerwacji. Baza blokuje późniejszą zmianę amount.
+
+| Metoda i adres | Sukces | Główne odmowy |
+|---|---|---|
+| GET /api/events | Tablica seansów z price | — |
+| GET /api/events/:id | { event, takenSeats }, event.price | 404 |
+| POST /api/reservations | 201, { reservationId, expiresAt, amount } | 400, 404, 409, 413, 415, 429; 403 przy pominięciu zaufanego proxy |
+| POST /api/reservations/:id/checkout | 200, { url } | 400, 404, 409 dla opłaconej lub przetwarzanej, 410 dla wygasłej, 429 |
+| GET /api/reservations/:id | Stan opisany poniżej | 400, 404 |
+| POST /api/webhooks/stripe | 200, { received: true } | 400 dla podpisu, trybu live i niezgodnych danych, 413 dla rozmiaru |
+| POST /api/reservations/:id/purchase | { code } wyłącznie dla istniejącego biletu | 402 dla nieopłaconej, 400, 404, 410 |
+
+Odczyt rezerwacji zwraca `{ reservationId, status, amount, expiresAt, event, seatId, serverNow, code?, refundStatus? }`. Status: held, paid albo expired. Kod występuje tylko dla biletu. Opcjonalny refundStatus: pending, refunded, failed. Nie zwracamy imienia ani e-maila.
+
+Wszystkie odpowiedzi API, również błędy, mają Cache-Control: no-store, max-age=0. Błąd ma postać `{ "error": { "code": "…", "message": "…" } }`. 2xx oznacza sukces, 4xx odmowę, 5xx błąd infrastruktury. Brak konfiguracji płatności lub przejściowa awaria Stripe daje 503. Utworzenie rezerwacji dodaje X-Server-Time. Daty to ISO 8601 UTC; interfejs wyświetla Europe/Warsaw.
+
+**A — Checkout:** formularz na / przekazuje eventId, seatId, customerName, email; odpowiedź przekazuje ID, termin i kwotę. Checkout nie przyjmuje ceny ani adresów powrotu od klienta. Serwer używa mode=payment, PLN, jednej sztuki i karty; SDK 23/API 2026-10-28 używa allowed_payment_method_types: ["card"]. client_reference_id wskazuje rezerwację. Parametry żądania i próba płatności są zapisane przed kontaktem ze Stripe. Powtórzenia korzystają z tej samej sesji i klucza idempotencji; wygasłą sesję można zastąpić, jeśli nadal obowiązuje rezerwacja.
+
+**B — Webhook:** surowe ciało jest czytane bez parsowania JSON przed weryfikacją stripe.webhooks.constructEvent. Limit 256 KiB działa również bez Content-Length; rezerwacje mają osobny limit 4 KiB. Podpis, testowy tryb, powiązanie sesji, client_reference_id, kwota, PLN, mode, status i payment_status muszą się zgadzać. Nieznane sesje z CLI lub innych aplikacji są potwierdzane i ignorowane. Samo stripe trigger checkout.session.completed nie opłaca dowolnej rezerwacji — zdarzenie musi dotyczyć sesji zapisanej przez nasz Checkout. Automatyczne testy B tworzą taką próbę jako fixture, niezależnie od karty A.
+
+**C — powrót:** adresy ustalone w kontrakcie to /platnosc/:id/sukces i /platnosc/:id/anulowano. Strona bierze ID z adresu, działa bez localStorage i odczytuje tylko nasze API. Sukces pokazuje „Płatność w toku…” i odpytuje co 2 s; po 60 s zmienia komunikat i udostępnia dodatkowe ręczne sprawdzenie, nadal automatycznie odpytując API. Opóźnione potwierdzenie samo zmienia ekran w bilet. paid pokazuje trwały bilet i wydruk; anulowanie udostępnia ponowny Checkout do pierwotnego terminu. Tylko ID rezerwacji trafia do localStorage.
+
+## Model, idempotencja i wygaśnięcie
+
+```text
+Event(price) → EventSeat → aktualna Reservation(amount) → 0..1 Ticket
+                             │
+                             └→ PaymentAttempt(sessionId, paymentIntentId, refundId)
+StripeEvent(event.id) — zakończone webhooki
+RateLimit — wspólne liczniki PostgreSQL
+```
+
+Zachowujemy SELECT … FOR UPDATE na stałym rekordzie fotela oraz clock_timestamp() odczytany po uzyskaniu blokady. Rezerwacja jest ważna wyłącznie przy expiresAt > czas bazy i zgodnym właścicielu. Zakup, ponowna rezerwacja i webhook serializują się na tym samym fotelu. Unikalności biletu, miejsca, kodu i identyfikatorów Stripe są wymuszane przez PostgreSQL. Wywołania sieciowe Stripe odbywają się poza transakcją blokującą fotel.
+
+Rezerwacja pozostaje idempotentna po normalizacji danych: SHA-256 [eventId, seatId, customerName, email]. Imię ma NFC i pojedyncze odstępy, e-mail jest małymi literami. Ważna lub opłacona rezerwacja tego klienta daje ten sam identyfikator, termin i historyczną kwotę. Po wygaśnięciu można utworzyć nową rezerwację.
+
+Wygaśnięcie nie wymaga crona ani otwartej przeglądarki. Mapa filtruje ważność przy odczycie; nowy klient może przejąć wygasły fotel, zachowując historię. Mapa odświeża się co 5 s i po fokusie, rezerwacja co 2 s. Licznik korzysta z czasu serwera i performance.now(). Bilety etapu I pozostają ważne, mimo braku historycznej płatności Stripe.
+
+**Ścisły TTL:** wydanie biletu musi nastąpić przed końcem rezerwacji, także gdy sama płatność rozpoczęła się wcześniej. Jeśli webhook dotrze po terminie, nie ma biletu i uruchamiany jest pełny zwrot. Dotyczy to również opóźnionego webhooka po zapłacie wykonanej przed terminem. Nie odbieramy miejsca nowemu właścicielowi. Druga opłacona sesja tej samej rezerwacji również otrzymuje zwrot, zachowując pierwszy bilet.
+
+Stripe pozwala ustawić automatyczne wygaśnięcie Checkout najwcześniej po 30 minutach; sesja w tej aplikacji korzysta z domyślnego terminu Stripe, niezależnego od krótszego TTL fotela. Po wygaśnięciu rezerwacji strona Stripe może jeszcze przyjąć testową płatność — sklep ją zwróci. Nie przedłużamy rezerwacji podczas Checkout.
+
+Zwrot ma trwały stan refund_pending i stały klucz idempotencji. Ponowienie najpierw szuka istniejącego zwrotu w Stripe, również po utracie odpowiedzi lub przekroczeniu retencji klucza. Awaria wywołania daje 503 i pozwala Stripe ponowić webhook. Zdarzenie zapisujemy jako zakończone dopiero po trwałej obsłudze. Zdarzenia refund.* aktualizują stan zwrotu; stan jest odczytywany ze Stripe, aby obsłużyć inną kolejność dostarczenia. Ostateczna odmowa zwrotu daje failed i komunikat wymagający pomocy kina; operator sprawdza log oraz płatność w panelu Stripe.
+
+## Rate limiting i zagrożenia
+
+Rezerwacja i Checkout mają oddzielne limity **20 prób na 10 s na adres sieciowy**. Liczniki są atomowe i współdzielone przez PostgreSQL, również między instancjami; niepoprawne żądania też zużywają limit. 429 ma Retry-After. Stare wpisy są usuwane oportunistycznie. Webhook nie podlega limiterowi klientów — chroni go podpis Stripe.
+
+Na Vercel zaufanie do x-vercel-forwarded-for włącza wyłącznie serwerowe VERCEL=1 z VERCEL_ENV=production/preview. Inne nagłówki IP są ignorowane; brak poprawnego IP daje 400. Lokalnie bez proxy używany jest wspólny kubełek. Przy własnym Nginx wymagamy sekretu ≥32 znaki i nadpisanych przez proxy nagłówków X-Kadr-Client-IP, X-Kadr-Proxy-Secret; port aplikacji pozostaje niepubliczny. Nie konfiguruj globalnego zaufania do dowolnych adresów proxy.
+
+| Zagrożenie | Zabezpieczenie / granica |
+|---|---|
+| Podwójna sprzedaż i wyścig z TTL | Blokada fotela, czas bazy po blokadzie, transakcje, unikalności i złożone FK. |
+| Zmiana ceny, waluty lub ilości przez klienta | Kwota z bazy, PLN, jedna sztuka, niezmienny snapshot amount, weryfikacja webhooka. |
+| Darmowy zakup przez stary endpoint lub fałszywy powrót | /purchase nie tworzy biletu, strona sukcesu tylko odczytuje stan; wyłącznie webhook wystawia nowy bilet. |
+| Fałszywy, zmieniony lub stary webhook | Podpis SDK na surowym body, tolerancja czasu SDK, odrzucenie live, kontrola sesji i danych. |
+| Duplikaty, utrata odpowiedzi i inna kolejność zdarzeń | Trwałe próby, klucze idempotencji, blokady, tabela zdarzeń, monotoniczny stan biletu. |
+| Stripe jako zewnętrzna usługa: awaria lub opóźnienie | 503 i ponowienie, brak transakcji DB obejmujących sieć, strona oczekiwania, ścisły TTL i pełny zwrot; operator obsługuje ostatecznie odrzucony zwrot. |
+| Flood i podszycie się pod inną sieć | Oddzielne limity w PostgreSQL, weryfikowane wejście proxy, limit surowego body. |
+| SQL injection, błędne dane i XSS | Zod, parametryzacja Prisma, limity rozmiaru, escaping React. |
+| Wyciek kluczy, danych osobowych lub karty | Sekrety wyłącznie na serwerze, .env ignorowany, bez treści żądań w logach; kartę zbiera wyłącznie Stripe. Stripe otrzymuje e-mail i opis biletu. |
+| Kradzież ID rezerwacji | UUID v4 jest tokenem dostępu: posiadacz może odczytać bilet. Brak publicznej listy rezerwacji, HTTPS, no-referrer, brak PII w API odczytu. |
+| Utrata danych i regresja migracji | Migracje bez kasowania historii, powtarzalny seed z pustym update, trwały wolumin; kopia przed migracją i retencja należą do operatora. |
+
+## Testy
+
+```sh
 npm run typecheck
 npm run build
-```
-
-Przygotuj `.env` zgodnie z sekcją 2, w tym osobną `TEST_DATABASE_URL`, a następnie uruchamiaj zestawy kolejno. Porty 3101 i 3102 muszą być wolne; runner sam uruchamia i zatrzymuje serwery testowe:
-
-```powershell
 docker compose --profile test up -d --wait
 npm test
-# Te same scenariusze API z symulowanym wejściem Vercel:
 npm run test:vercel
-# Osobno: rzeczywisty upływ 120 sekund (test trwa około 122 s).
 npm run test:120
 ```
 
-Wymagany jest produkcyjny build z poprzedniego bloku. `npm test` uruchamia 9 testów jednostkowych i 15 testów API. `npm run test:vercel` uruchamia te same 15 scenariuszy API, w tym B5, z serwerowym trybem Vercel i symulowanymi nagłówkami platformy. Oba zestawy startują dwie instancje ze wspólną bazą i TTL 3 s; osobny `test:120` sprawdza TTL 120 s. Zestawy uruchamiaj kolejno. Baza testowa jest oddzielna, z nazwą zakończoną `_test`; jej zawartość jest resetowana przez testy. Runner nadpisuje również `DATABASE_URL_POOLED` testowym adresem, aby nie użyć poolera produkcyjnego. Nie ma publicznych endpointów resetowania danych ani zmiany czasu.
+Jeśli lokalny sandbox blokuje pomocniczy proces Turbopack, można zbudować przez npm run build -- --webpack. To ten sam kod aplikacji z drugim bundlerem Next.js. Testy wymagają gotowego produkcyjnego buildu.
 
-Playwright nie jest zależnością repozytorium. Dotychczasowe testy przeglądarkowe, ich konfiguracja i osobny runner `scripts/run-e2e.local.ts` pozostają wyłącznie lokalnie i są ignorowane. Instrukcja ich opcjonalnego uruchomienia jest w lokalnym `TESTING.local.md`. Wyniki wcześniejszej weryfikacji UI opisano w sekcji 8; testy jednostkowe i API nie zastępują sprawdzenia klikania w przeglądarce. Po sklonowaniu repozytorium lokalne pliki Playwright nie będą dostępne.
+Runner uruchamia migracje i seed na **osobnej** TEST_DATABASE_URL, dwie instancje aplikacji (3101, 3102) oraz zastępcze Stripe (3103). Nadpisuje oba URL-e bazy, tryb platformy i sekrety testowe, aby nie dotknąć produkcji. Kolejne zestawy należy uruchamiać sekwencyjnie. Testy resetują wyłącznie bazę _test; nie ma publicznych endpointów resetowania ani zmiany czasu. Transport testowy jest wstrzykiwany przez preload Node wyłącznie w runnerze — żadna zmienna aplikacji ani żądanie HTTP nie zmienia adresu Stripe.
 
-Ignorowane są także sekrety, zależności, build, wygenerowany klient Prisma i `next-env.d.ts`, cache, logi, raporty, zrzuty i lokalne pliki narzędziowe. Żaden z tych plików nie jest wymagany w Git: zależności instaluje `npm ci`, klienta generuje `db:generate`, a build odtwarza `npm run build`. Polecenie `typecheck` generuje klienta Prisma i typy tras Next.js przed sprawdzeniem TypeScript, więc działa także bez istniejącego `.next`. Plik `.env.example` pozostaje wersjonowany; prawdziwy `.env` pozostaje lokalny.
+Testy jednostkowe: konfiguracja, sekrety, surowe body, normalizacja i zaufane proxy. Testy API: regresje etapu I, konkurencja i limiter, snapshot ceny, Checkout i jego ponowienia, podpisy, duplikaty webhooków, trwałość kodu, zwroty i ich uzgadnianie, zdarzenia poza kolejnością oraz strony powrotu. test:120 czeka na rzeczywisty upływ ponad dwóch minut.
 
-## 5. Kontrakt API i przykłady
+Weryfikacja lokalna 16 listopada 2026: macOS, Node.js 22.23.5, PostgreSQL 17 w Dockerze, produkcyjny build i Google Chrome.
 
-| Metoda i adres                        | Sukces                                      | Odmowy                                                                         |
-| ------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------ |
-| `GET /api/events`                     | `200`, tablica seansów                      | `500` przy awarii infrastruktury                                               |
-| `GET /api/events/:id`                 | `200`, `{ event, takenSeats }`              | `404`                                                                          |
-| `POST /api/reservations`              | `201`, `{ reservationId, expiresAt }`       | `400`, `404`, `409`, `413`, `415`, `429`; `403` dla pominięcia zaufanego proxy |
-| `POST /api/reservations/:id/purchase` | `200`, `{ code }`                           | `400`, `404`, `410`                                                            |
-| `GET /api/reservations/:id`           | `200`, stan, seans i fotel, ewentualnie kod | `400`, `404`                                                                   |
+| Sprawdzenie | Wykonany wynik |
+|---|---|
+| TypeScript | PASS |
+| Produkcyjny build przez Webpack | PASS; domyślny Turbopack napotkał blokadę pomocniczego procesu w tym środowisku |
+| Testy jednostkowe | 11/11 |
+| Testy API z wejściem Nginx | 32/32, w tym migracja istniejącego biletu etapu I |
+| Testy API z symulowanym wejściem Vercel | 32/32, w tym migracja istniejącego biletu etapu I |
+| Rzeczywisty TTL 120 s | 1/1, po 122 s czasu rzeczywistego |
+| Chrome: rezerwacja, przekierowanie, anulowanie, powrót bez storage, webhook, bilet, odświeżenie i PDF | PASS, zastępczy Stripe |
+| Chrome: bilet na 390/320 px i wygasła rezerwacja ze zwrotem | PASS, bez poziomego przewijania strony i błędów JS |
+| Chrome: potwierdzenie po ponad 60 s oczekiwania | PASS, symulowany zegar przeglądarki; bilet pojawia się automatycznie, a polling kończy się po paid |
+| Chrome: wygaśnięcie i zwrot po ponad 60 s oczekiwania | PASS, symulowany zegar przeglądarki; oba stany pojawiają się automatycznie |
+| Szablon produkcyjnego Compose i składnia Nginx | PASS |
+| Rzeczywiste Stripe Sandbox: karta 4242, webhook i kod biletu | PASS, 32 PLN i HTTP 200 webhooka |
+| Rzeczywiste Stripe Sandbox: odmowa karty i ponowienie tej samej sesji | PASS, brak biletu i zachowany termin |
+| Rzeczywiste Stripe Sandbox: karta wymagająca 3D Secure | PASS po potwierdzeniu testowego uwierzytelnienia, status paid |
+| Rzeczywiste Stripe Sandbox: płatność po wygaśnięciu | PASS, pełny zwrot 32 PLN, status expired/refunded i brak biletu |
 
-Każdy błąd aplikacyjny: `{ "error": { "code": "SEAT_TAKEN", "message": "…" } }`. Brak cache: `Cache-Control: no-store, max-age=0` na wszystkich odpowiedziach API, także błędach. JSON z rezerwacją wymaga `Content-Type: application/json`. Limit ciała 4096 bajtów jest egzekwowany również bez `Content-Length`. Nieobsługiwane metody obsługuje standardowe `405` Next.js.
+Zrzuty i PDF sprawdzano lokalnie w ignorowanym katalogu output/stage-ii; Playwright i skrypt przeglądarkowy pozostają w katalogu tymczasowym, nie są zależnością repozytorium ani częścią npm test.
 
-Przykłady lokalnie, bez skonfigurowanego sekretu proxy:
+Rzeczywiste testy Sandbox wykonano w Google Chrome na lokalnej aplikacji z webhookami przekazywanymi przez Stripe CLI. Test zwrotu używał osobnej nowo utworzonej rezerwacji demonstracyjnej, której termin przesunięto bezpośrednio w lokalnej bazie; nie dodano publicznego endpointu zmiany czasu. Wszystkie płatności i zwroty były testowe, bez prawdziwych pieniędzy.
 
-```powershell
-curl.exe -i http://127.0.0.1:3000/api/events
-curl.exe -i http://127.0.0.1:3000/api/events/orbita
+Wyniki lokalne nie potwierdzają publicznego wdrożenia. Publiczny endpoint webhooka, sekrety na Vercel oraz zaproszenie nauczyciela wymagają konfiguracji kont operatora. Instrukcja: [WDROZENIE.md](WDROZENIE.md). Przegląd zgodności z plannerem Stripe: [STRIPE-REVIEW.md](STRIPE-REVIEW.md).
 
-# Plik pozwala uniknąć różnic w cytowaniu JSON pomiędzy wersjami PowerShell.
-'{"eventId":"orbita","seatId":"F7","customerName":"Anna","email":"anna@example.com"}' |
-  Set-Content -Encoding ascii reservation.json
-curl.exe -i -X POST http://127.0.0.1:3000/api/reservations `
-  -H 'Content-Type: application/json' --data-binary '@reservation.json'
+## Migracje i wdrożenie
 
-# Wstaw reservationId otrzymany powyżej:
-curl.exe -i -X POST http://127.0.0.1:3000/api/reservations/TUTAJ_UUID/purchase
-curl.exe -i http://127.0.0.1:3000/api/reservations/TUTAJ_UUID
-Remove-Item -LiteralPath reservation.json
-```
+Nowa migracja 202611160001_stripe_checkout dodaje ceny, kwoty, próby płatności i zdarzenia. Uzupełnia istniejące seanse ceną 3200 i kopiuje ją do dotychczasowych rezerwacji. Nie usuwa historii ani biletów i nie wymaga dowodu Stripe dla biletów wydanych w etapie I. Używaj prisma migrate deploy, nie db push, aby zachować triggery i ograniczenia SQL.
 
-`eventId` i `seatId` są tekstem; w wariancie KINO poprawne fotele to A1–H10. Daty API są ISO 8601 UTC z `Z`; UI wyświetla termin w `Europe/Warsaw`.
+Seed pozostaje powtarzalny: trzy seanse, dwie sale, 240 foteli A1–H10; nie nadpisuje istniejących cen, dat, rezerwacji ani biletów. Demonstracyjne daty to 6 listopada 2026; zachowano regułę etapu I bez odrzucania zakupu na podstawie daty seansu.
 
-## 6. Model i gwarancje
+Vercel wykonuje npm run vercel-build: generowanie Prisma, migracje, seed i build. Własny Docker wymaga migracji i seeda przed startem nowej wersji. Przed publiczną aktualizacją wykonaj kopię istniejącej bazy. Po migracji nie wdrażaj starego zapisu etapu I, który nie podaje obowiązkowego amount; w razie problemów przywróć zgodny kod etapu II, a odtwarzanie kopii bazy uzgodnij osobno, aby nie utracić nowych płatności.
 
-```text
-Event ──< EventSeat (eventId, seatId) ──> currentReservationId
-                   │                           │
-                   └──< Reservation (historia) ┘── 0..1 Ticket
-RateLimit (skrót adresu sieci, licznik, koniec okna)
-```
-
-**Jeden punkt blokowania.** W każdej transakcji rezerwacji i zakupu `SELECT ... FOR UPDATE` blokuje stały rekord `EventSeat`. Rekordy foteli tworzy wyłącznie seed. Izolacja PostgreSQL `READ COMMITTED` pozwala po oczekiwaniu odczytać aktualnego właściciela. Aplikacja nie używa blokad pamięciowych ani mechanizmu „sprawdź, potem zapisz” poza transakcją. Nie ma pętli ponowień transakcji; `maxWait=10 s`, `timeout=15 s` ograniczają oczekiwanie po stronie Prisma.
-
-**Wspólny czas.** Po uzyskaniu blokady następuje osobne `SELECT clock_timestamp()`. Przyznanie i zakup korzystają z tego czasu. Nie stosujemy `now()`/`transaction_timestamp()`, bo zwracałyby moment sprzed oczekiwania. Rezerwacja jest ważna dokładnie wtedy, gdy `expiresAt > czas bazy`; równość oznacza wygaśnięcie.
-
-**Wygaśnięcie bez procesu w tle.** Odczyt mapy filtruje rezerwacje według `clock_timestamp()`; kupione miejsca są zawsze zajęte. Nowa rezerwacja może pod blokadą zastąpić wskaźnik wygasłego właściciela. Stary rekord pozostaje w historii. Cron, timer serwera i otwarta karta nie są potrzebne. Odczyt nie musi nic zapisywać.
-
-**Idempotentność rezerwacji bez nagłówka.** Klucz to SHA-256 tablicy `[eventId, seatId, customerName, email]` po walidacji i normalizacji. ID są przycięte; imię ma NFC, przycięte brzegi i pojedyncze odstępy, zachowuje wielkość liter; e-mail jest przycięty i zapisany małymi literami. Aktualna ważna lub kupiona rezerwacja o tym kluczu daje to samo ID i termin. Inny klient dostaje 409. Po wygaśnięciu niekupionej rezerwacji można utworzyć nową, również dla identycznych danych. UI ma synchroniczną blokadę `useRef` i blokuje przyciski podczas żądania.
-
-**Idempotentny zakup i trwały bilet.** Pod tą samą blokadą najpierw szukamy istniejącego biletu. Jeśli istnieje, zwracamy jego kod nawet po pierwotnym terminie rezerwacji. W przeciwnym razie weryfikujemy właściciela i ważność, po czym tworzymy bilet. `UNIQUE(reservationId)`, `UNIQUE(code)` i `UNIQUE(eventId, seatId)` uniemożliwiają duplikaty. Dodatkowe złożone klucze obce wymuszają zgodność rezerwacji, fotela i biletu. Wyścig zakupu z ponowną rezerwacją serializuje się na jednym rekordzie.
-
-**Stan przeglądarki.** Mapa odświeża się co 5 s i po odzyskaniu fokusu, stan rezerwacji co 2 s. Licznik oblicza prezentację z czasu serwera i monotonicznego `performance.now()`. Nawet przy zerowym liczniku o ważności rozstrzyga serwer. Tylko UUID rezerwacji trafia do `localStorage`; nie trafiają tam imię ani e-mail. Po zakupie spóźniony odczyt nie może cofnąć interfejsu do stanu rezerwacji. Awaria odtwarzania zapisanej rezerwacji daje ponowienie odczytu.
-
-## 7. Rate limiting i zaufane proxy
-
-Limit: **20 prób utworzenia rezerwacji w 10 s na adres sieciowy**, stałe okno rozpoczynane pierwszą próbą. Także niepoprawne i powtórzone próby zużywają limit. Atomowy `INSERT … ON CONFLICT DO UPDATE` w PostgreSQL współdzieli licznik między procesami. Nadmiar daje 429 i całkowity `Retry-After` w sekundach, co najmniej 1. Inny adres ma osobny rekord. Po końcu okna nowa próba resetuje licznik.
-
-Przed każdą próbą usuwamy rekordy starsze niż minuta od końca okna, także przy 429. Tabela nie rośnie w spoczynku; pierwszy ruch po przerwie usuwa stare wpisy. Indeks na `expiresAt` wspiera sprzątanie. Lokalnie, poza Vercel i bez skonfigurowanego zaufanego proxy, aplikacja ignoruje przekazane nagłówki adresowe i używa wspólnego kubełka.
-
-**Vercel:** gdy systemowe zmienne procesu mają `VERCEL=1` oraz `VERCEL_ENV=production` lub `preview`, limiter korzysta wyłącznie z `x-vercel-forwarded-for`, dostarczanego przez wejście Vercela. Platforma nadpisuje nagłówki IP na swoim wejściu. Sam nagłówek `x-vercel-id` ani przesłane w HTTP `VERCEL=1` nie włączają zaufania do platformy. Tryb lokalnego `vercel dev` nie jest traktowany jako zaufane wdrożenie. `X-Forwarded-For`, `X-Real-IP` i nagłówki KADR nie zmieniają klucza klienta w trybie Vercel. Brak poprawnego pojedynczego IP daje 400 zamiast wspólnego limitu dla wszystkich. Nie trzeba ustawiać `TRUSTED_PROXY_SECRET`.
-
-**Własny Nginx:** ustaw losowy `TRUSTED_PROXY_SECRET` (co najmniej 32 znaki) w serwerze i proxy. Nginx **nadpisuje** `X-Kadr-Client-IP` wartością `$remote_addr` i `X-Kadr-Proxy-Secret` sekretem z konfiguracji. Aplikacja porównuje sekret w stałym czasie i wymaga pojedynczego poprawnego IP. Samodzielnie wpisany przez klienta XFF nie zmienia limitu. Port aplikacji nie może być publicznie dostępny; w przygotowanym Compose dostępny jest tylko w sieci kontenerów. Adres w bazie limitera przechowujemy jako SHA-256.
-
-Konfiguracja: [deploy/nginx.conf.template](deploy/nginx.conf.template). Przy dodatkowym load balancerze Nginx musi ufać wyłącznie jego konkretnemu IP/CIDR przez `set_real_ip_from` i `real_ip_header`. Nie wolno globalnie ufać nagłówkom wszystkich klientów. Wiele osób za jednym NAT współdzieli limit — to świadoma konsekwencja limitowania według sieci bez kont.
-
-W B5 testy API symulują dwa adresy IP na dwóch instancjach: standardowy zestaw używa sekretu Nginx, a `test:vercel` używa nagłówka Vercela i sprzecznych, niezaufanych nagłówków IP. Sprawdza to wspólny limiter i rozdzielenie klientów w obu trybach. Nie potwierdza działania wejścia Nginx ani Vercel z rzeczywistym ruchem internetowym.
-
-## 8. Kryteria — rzeczywiste wyniki
-
-Weryfikacja lokalna: **1 listopada 2026**, Windows, Node 22.14.0, PostgreSQL 17 w Dockerze, produkcyjny build Next.js i Chromium. Wyniki dotyczą wykonanych testów, nie są deklaracją testowania dowolnego przyszłego wdrożenia.
-
-| Kryterium | Test i sprawdzany efekt                                                                         | Wynik                                      |
-| --------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| A1        | `tests/api.test.ts`, nieistniejący seans, 404                                                   | PASS                                       |
-| A2        | Sam GET po naturalnym TTL 3 s, brak fotela w mapie, historia bez zmian                          | PASS                                       |
-| B1        | Ponowienia kolejno i 8 równocześnie w 2 instancjach; E2E: podwójne kliknięcie z opóźnieniem 1 s | PASS API + E2E                             |
-| B2        | 20 równoczesnych klientów: 1×201, 19×409, jeden rekord i właściciel                             | PASS                                       |
-| B3        | Nieistniejący seans/fotel, puste dane, błędne typy, JSON, MIME i rozmiar; zero rezerwacji       | PASS                                       |
-| B4        | Nowy klient po naturalnym wygaśnięciu, dwa rekordy historii, jeden właściciel                   | PASS                                       |
-| B5        | 100 prób w <10 s: 20×201, 80×429, Retry-After; drugi symulowany adres IP rezerwuje              | PASS lokalnie                              |
-| C1        | 8 zakupów równocześnie i kolejny zakup: jeden kod i jeden bilet                                 | PASS                                       |
-| C2        | 5 wyścigów przy expiresAt: zawsze ≤1 właściciel, ≤1 bilet i bez 5xx                             | PASS                                       |
-| C3        | Losowy nieistniejący UUID i `abc`: 404/400, brak biletu                                         | PASS                                       |
-| C4        | Odmowa po TTL, trwały zakup i powtórzony kod po TTL 3 s; osobno prawdziwe 120 s                 | PASS, również po 122 s rzeczywistego czasu |
-
-Po dostosowaniu do Vercela wykonano: TypeScript PASS, build PASS, jednostkowe **9/9**, API w trybie Nginx **15/15**, API w symulowanym trybie Vercel **15/15**. Polecenie `npm run vercel-build` również przeszło lokalnie z adresem osobnej bazy testowej: generowanie klienta, `migrate deploy` (brak oczekujących migracji), seed i build. Nie uruchamiano go przeciwko zdalnej bazie Prisma Postgres.
-
-Wcześniejsze sprawdzenie rzeczywistego TTL 120 s dało **1/1**; przekazany log potwierdzał również ówczesne 3 testy jednostkowe i 15 testów API. Testy przeglądarkowe **5/5** wykonano wcześniej lokalnie i nie są częścią `npm test` ani repozytorium. Zbudowano też lokalne obrazy Docker na Linux/Alpine i sprawdzono szablon Compose przez `config --quiet`; nie oznacza to wdrożenia. Dodatkowe testy sprawdzają czas po oczekiwaniu na blokadę, integralność bazy, seed bez utraty danych, dwie instancje oraz ponowienia po awarii sieci.
-
-Nie weryfikowano wdrożenia na publicznym serwerze, certyfikatów TLS, fizycznej drukarki ani innych przeglądarek niż Chromium. Sprawdzenie widoków obejmuje 1440 px oraz 390 i 320 px. Zrzuty desktop/mobile i wydruku obejrzano lokalnie.
-
-Weryfikacja UI obejmowała kontrast wybranych tekstów (minimum 4,5:1), fokus klawiatury, symbole i obramowania stanów foteli, przyciski 44×44 px, brak przewijania całej strony w poziomie, pełne proporcje ilustracji oraz zakup biletu na telefonie. Mapa na wąskim ekranie przewija się we własnym obszarze. Wydruk zawiera dane biletu i kod tekstowy, bez dekoracyjnego kodu kreskowego.
-
-Warunek wstępny nauczyciela wymaga działających endpointów **pod adresem firmy** i włączonego TTL 120 s. Lokalny wynik testów nie potwierdza tego warunku i nie jest gwarancją punktacji wdrożenia. Prywatne repozytorium GitHub samo nie uruchamia aplikacji.
-
-## 9. Zagrożenia i zabezpieczenia
-
-| Zagrożenie                                   | Zabezpieczenie / granica                                                                                                                                              |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Podwójna sprzedaż, wyścig z wygaśnięciem     | Blokada stałego fotela, sprawdzenie czasu po blokadzie, transakcja, unikalności i klucze obce.                                                                        |
-| Powtórzone kliknięcie lub utracona odpowiedź | Idempotentne API, synchronizowana blokada UI, ponowienie zakupu zwraca ten sam kod.                                                                                   |
-| Zmiana zegara klienta / zamknięcie strony    | Czas PostgreSQL, filtr ważności w odczycie, brak zależności od timera i crona.                                                                                        |
-| Flood i podszycie się pod inną sieć          | Wspólny limiter PostgreSQL, nadpisywanie IP przez proxy, sekretny nagłówek, odrzucanie niezweryfikowanego proxy.                                                      |
-| SQL injection / błędny JSON / duże body      | Zod, zapytania parametryzowane Prisma, limit strumienia 4 KiB.                                                                                                        |
-| XSS / wyciek danych i sekretów               | Escaping React, brak HTML z danych klienta, API odczytu nie zwraca imienia/e-maila, brak PII w logach, `.env` ignorowane.                                             |
-| Odgadnięcie lub kradzież rezerwacji          | Losowy UUID v4 jako token dostępu, bez listy rezerwacji. ID należy traktować jak sekret; posiadacz może odczytać bilet i wykonać zakup. Wymagany TLS przy publikacji. |
-| Nieaktualna mapa / awaria sieci              | No-store, polling, odświeżenie po konflikcie, komunikaty i możliwość ponowienia; serwer zawsze ponownie sprawdza fotel.                                               |
-| Utrata danych                                | Trwały wolumin, migracje, seed bez kasowania; kopie zapasowe i retencja po stronie operatora.                                                                         |
-
-Karty A/B/C działają na stronie `/`: wybór seansu i fotela → formularz → licznik → bilet. Między widokami przekazywane są obiekt seansu i tekstowy `seatId`, następnie `reservationId` i `expiresAt`, a po zakupie `code`. Typy publiczne są w `src/lib/types.ts`. Implementacja pozostaje w etapie I.
-
-Dokumentacja użyta przy doborze konfiguracji: [Next.js — instalacja](https://nextjs.org/docs/app/getting-started/installation), [Prisma ORM 7 — adapter i konfiguracja](https://www.prisma.io/docs/orm/v7).
-
-## 10. Vercel i Prisma Postgres
-
-1. Połącz bazę Prisma Postgres z projektem Vercel w środowisku **Production**. Integracja dodaje `DATABASE_URL` (bezpośredni, dla migracji i seeda) oraz `DATABASE_URL_POOLED` (pooler, dla aplikacji). Oba muszą być adresami `postgres://` lub `postgresql://`. Nie podmieniaj ich lokalnymi adresami Dockera ani adresem `prisma+postgres://`.
-2. Dodaj `RESERVATION_TTL_SECONDS=120` w Production. Nie dodawaj lokalnych `POSTGRES_*`, `TEST_DATABASE_URL` ani `TRUSTED_PROXY_SECRET`. Dodatkowe aliasy utworzone przez integrację mogą pozostać — kod ich nie wymaga.
-3. Zostaw włączony dostęp do **System Environment Variables** w ustawieniach Vercela. Platforma sama dostarcza `VERCEL` i `VERCEL_ENV`; nie wpisuj ich ręcznie do lokalnego `.env`. Limiter wybierze tryb Vercel automatycznie.
-4. Plik `vercel.json` ustawia Build Command na `npm run vercel-build`. Polecenie generuje klienta Prisma, wykonuje `prisma migrate deploy`, dodaje dane przez powtarzalny seed i buduje Next.js. Migracja nie tworzy nowego projektu ani nowego pliku migracji; seed zachowuje istniejące rezerwacje i bilety. Nie uruchamiaj ponownie `create-next-app` ani `migrate dev --name init` z ogólnego quickstartu integracji.
-5. Po wysłaniu zmian do GitHub uruchom wdrożenie lub redeploy z aktualnego commita. Istniejący deployment nie otrzymuje nowych zmiennych bez ponownego wdrożenia. Jeżeli włączysz Preview, skonfiguruj mu osobną bazę i zmienne; nie kieruj prób Preview do bazy używanej przez nauczyciela.
-6. Po wdrożeniu sprawdź `GET /api/events` (3 seanse), rezerwację z terminem około 120 s, zakup z kodem oraz rozdzielenie limitów z dwóch rzeczywistych sieci. Sprawdź dostęp do adresu bez zalogowania do Vercela — tester nauczyciela musi móc wywołać API.
-
-Ta konfiguracja została przygotowana w kodzie. Nie oznacza to, że zdalna baza lub wdrożenie zostały już zweryfikowane; migracja i seed wykonają się przy Twoim buildzie z danymi dostępowymi integracji.
-
-Źródła konfiguracji wdrożenia: [Prisma Postgres na Vercel](https://www.prisma.io/docs/guides/postgres/vercel), [nagłówki Vercel](https://vercel.com/docs/headers/request-headers), [systemowe zmienne środowiskowe](https://vercel.com/docs/environment-variables/system-environment-variables).
+Źródła: [Checkout](https://docs.stripe.com/api/checkout/sessions/create), [webhooki](https://docs.stripe.com/webhooks), [realizacja płatności](https://docs.stripe.com/checkout/fulfillment.md?ui=full-page), [idempotencja](https://docs.stripe.com/api/idempotent_requests), [zwroty](https://docs.stripe.com/api/refunds/create).

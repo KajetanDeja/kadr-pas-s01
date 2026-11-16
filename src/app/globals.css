@@ -51,6 +51,8 @@ h2 { font-size: 28px; }
 .showtime strong { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .showtime > span { font-size: 15px; white-space: nowrap; }
 .film-selection { display: block; font-size: 14px; color: var(--muted); }
+.film-price { margin-bottom: 8px; font-weight: 600; color: var(--accent); }
+.booking-price { padding-top: 16px; font-size: 18px; }
 .selected-film .film-selection { color: var(--accent); font-weight: 600; }
 .hall-section { margin-top: 30px; }
 .hall-section .section-heading { margin-bottom: 16px; }

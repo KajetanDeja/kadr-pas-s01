@@ -10,9 +10,10 @@ const rows = Array.from("ABCDEFGH");
 const time = (value: string) => new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Warsaw" }).format(new Date(value));
 const day = (value: string) => new Intl.DateTimeFormat("pl-PL", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Warsaw" }).format(new Date(value));
 const message = (e: unknown) => e instanceof Error ? e.message : "Coś poszło nie tak. Spróbuj ponownie.";
+const money = (amount: number) => new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN", maximumFractionDigits: amount % 100 ? 2 : 0 }).format(amount / 100);
 function remember(id: string | null) { try { if (id) localStorage.setItem(storageKey, id); else localStorage.removeItem(storageKey); } catch { /* Rezerwacja działa także bez dostępu do storage. */ } }
 
-export function Cinema() {
+export function Cinema({ initialReservationId, returnMode }: { initialReservationId?: string; returnMode?: "success" | "cancel" }) {
   const [events, setEvents] = useState<CinemaEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<CinemaEvent | null>(null);
   const [taken, setTaken] = useState<string[]>([]);
@@ -30,6 +31,8 @@ export function Cinema() {
   const [email, setEmail] = useState("");
   const [seconds, setSeconds] = useState(0);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [confirmationDelayed, setConfirmationDelayed] = useState(false);
+  const [pollAttempt, setPollAttempt] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -39,15 +42,15 @@ export function Cinema() {
         const { data } = await api<CinemaEvent[]>("/api/events");
         if (!alive) return;
         setEvents(data); setSelectedEvent(data[0] ?? null);
-        let id: string | null = null;
-        try { id = localStorage.getItem(storageKey); } catch { /* optional storage */ }
+        let id: string | null = initialReservationId ?? null;
+        if (!id) try { id = localStorage.getItem(storageKey); } catch { /* optional storage */ }
         if (id) {
           try {
             const restored = await api<ReservationView>(`/api/reservations/${encodeURIComponent(id)}`);
             if (!alive) return;
-            setReservation(restored.data); setSelectedEvent(restored.data.event); setSelectedSeat(restored.data.seatId);
+            remember(id); setReservation(restored.data); setSelectedEvent(restored.data.event); setSelectedSeat(restored.data.seatId);
           } catch (e) {
-            if (e instanceof RequestError && [400, 404].includes(e.status)) remember(null);
+            if (!initialReservationId && e instanceof RequestError && [400, 404].includes(e.status)) remember(null);
             else throw e;
           }
         }
@@ -56,7 +59,7 @@ export function Cinema() {
     }
     void load();
     return () => { alive = false; };
-  }, [loadAttempt]);
+  }, [loadAttempt, initialReservationId]);
 
   const refreshMap = useCallback(async (event: CinemaEvent) => {
     const { data } = await api<{ event: CinemaEvent; takenSeats: string[] }>(`/api/events/${encodeURIComponent(event.id)}`);
@@ -88,7 +91,7 @@ export function Cinema() {
   }, [selectedEvent, refreshMap]);
 
   useEffect(() => {
-    if (!reservation || reservation.status !== "active") return;
+    if (!reservation || reservation.status !== "held") return;
     const until = new Date(reservation.expiresAt).getTime() - new Date(reservation.serverNow).getTime();
     const start = performance.now();
     const tick = () => setSeconds(Math.max(0, Math.ceil((until - (performance.now() - start)) / 1000)));
@@ -97,7 +100,8 @@ export function Cinema() {
   }, [reservation]);
 
   useEffect(() => {
-    if (reservation?.status !== "active") return;
+    if (!reservation || reservation.status === "paid") return;
+    if (reservation.status === "expired" && !returnMode && reservation.refundStatus !== "pending") return;
     let alive = true, pending = false;
     const update = async () => {
       if (pending || inFlight.current) return;
@@ -105,15 +109,23 @@ export function Cinema() {
       try {
         const { data } = await api<ReservationView>(`/api/reservations/${reservation.reservationId}`);
         if (alive && !inFlight.current) {
-          setReservation((current) => current?.status === "active" ? data : current);
+          setReservation((current) => current?.reservationId === data.reservationId && current.status !== "paid" ? data : current);
           setError("");
         }
       } catch (e) { if (alive) setError(message(e)); }
       finally { pending = false; }
     };
     const timer = setInterval(() => void update(), 2000);
-    return () => { alive = false; clearInterval(timer); };
-  }, [reservation?.reservationId, reservation?.status]);
+    window.addEventListener("focus", update);
+    return () => { alive = false; clearInterval(timer); window.removeEventListener("focus", update); };
+  }, [reservation?.reservationId, reservation?.status, reservation?.refundStatus, returnMode, pollAttempt]);
+
+  useEffect(() => {
+    if (returnMode !== "success") return;
+    setConfirmationDelayed(false);
+    const timer = setTimeout(() => setConfirmationDelayed(true), 60000);
+    return () => clearTimeout(timer);
+  }, [returnMode, pollAttempt]);
 
   function chooseEvent(event: CinemaEvent) {
     if (reservation || busy) return;
@@ -135,12 +147,12 @@ export function Cinema() {
     if (inFlight.current || !selectedEvent || !selectedSeat || reservation) return;
     inFlight.current = true; setBusy(true); setError("");
     try {
-      const { data, serverNow } = await api<{ reservationId: string; expiresAt: string }>("/api/reservations", {
+      const { data, serverNow } = await api<{ reservationId: string; expiresAt: string; amount: number }>("/api/reservations", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId: selectedEvent.id, seatId: selectedSeat, customerName: name, email })
       });
       remember(data.reservationId);
-      setReservation({ ...data, event: selectedEvent, seatId: selectedSeat, status: "active", code: null, serverNow: serverNow! });
+      setReservation({ ...data, event: selectedEvent, seatId: selectedSeat, status: "held", serverNow: serverNow! });
       setName(""); setEmail(""); setTaken((prev) => [...new Set([...prev, selectedSeat])]);
     } catch (e) {
       setError(message(e));
@@ -154,17 +166,22 @@ export function Cinema() {
     if (inFlight.current || !reservation) return;
     inFlight.current = true; setBusy(true); setError("");
     try {
-      const { data } = await api<{ code: string }>(`/api/reservations/${reservation.reservationId}/purchase`, { method: "POST" });
-      setReservation({ ...reservation, status: "purchased", code: data.code });
+      const { data } = await api<{ url: string }>(`/api/reservations/${reservation.reservationId}/checkout`, { method: "POST", signal: AbortSignal.timeout(25000) });
+      window.location.assign(data.url);
     } catch (e) {
       setError(message(e));
       if (e instanceof RequestError && e.status === 410) setReservation({ ...reservation, status: "expired" });
+      if (e instanceof RequestError && e.status === 409) {
+        try { const { data } = await api<ReservationView>(`/api/reservations/${reservation.reservationId}`); setReservation(data); }
+        catch { /* Pierwotny komunikat pozostaje widoczny. */ }
+      }
     } finally { inFlight.current = false; setBusy(false); }
   }
-  function reset() { remember(null); setReservation(null); setSelectedSeat(null); setError(""); }
+  function reset() { remember(null); if (initialReservationId) { window.location.assign("/"); return; } setReservation(null); setSelectedSeat(null); setError(""); }
   const row = (reservation?.seatId ?? selectedSeat)?.slice(0, 1);
   const seatNumber = (reservation?.seatId ?? selectedSeat)?.slice(1);
-  const purchased = reservation?.status === "purchased";
+  const purchased = reservation?.status === "paid";
+  const awaitingPayment = returnMode === "success" && reservation?.status === "held";
 
   return <div className="app-shell">
     <a href="#repertuar" className="skip-link">Przejdź do repertuaru</a>
@@ -190,6 +207,7 @@ export function Cinema() {
                 <p className="film-genre">{event.genre} · {event.duration} min · {event.ageRating}</p>
                 <time className="film-date" dateTime={event.startsAt}>{day(event.startsAt)}</time>
                 <div className="showtime"><strong>{time(event.startsAt)}</strong><span>{event.hall}</span></div>
+                <p className="film-price">{money(event.price)} / fotel</p>
                 <span className="film-selection">{selectedEvent?.id === event.id ? "✓ Wybrany seans" : "Wybierz seans"}</span>
               </div>
             </button>)}</div>
@@ -218,8 +236,9 @@ export function Cinema() {
           <h2 id="summary-title">{purchased ? "Twój bilet" : "Twoja rezerwacja"}</h2>
           <div className="summary-film"><h3>{selectedEvent?.title}</h3><p>{selectedEvent && <time dateTime={selectedEvent.startsAt}>{day(selectedEvent.startsAt)}</time>}</p></div>
           <dl className="booking-details"><div><dt>Godzina</dt><dd>{selectedEvent && time(selectedEvent.startsAt)}</dd></div><div><dt>Sala</dt><dd>{selectedEvent?.hall.replace("Sala ", "")}</dd></div><div><dt>Rząd</dt><dd>{row ?? "—"}</dd></div><div><dt>Fotel</dt><dd>{seatNumber ?? "—"}</dd></div></dl>
+          <p className="booking-price">{purchased ? "Zapłacono" : "Cena biletu"}: <strong>{money(reservation?.amount ?? selectedEvent?.price ?? 0)}</strong></p>
           {!reservation ? <>
-            <p className="reservation-explainer">Wybierz fotel i podaj dane. Po rezerwacji potwierdź zakup przed końcem odliczania.</p>
+            <p className="reservation-explainer">Wybierz fotel i podaj dane. Po rezerwacji zapłać kartą przed końcem odliczania.</p>
             <form onSubmit={submit} aria-label="Rezerwacja fotela">
               <p className="form-caption">{selectedSeat ? `Twój wybór: Rząd ${row}, miejsce ${seatNumber}` : "Najpierw wybierz wolny fotel na mapie."}</p>
               <label htmlFor="customer-name">Twoje imię</label><input id="customer-name" name="customerName" placeholder="np. Aleksandra" autoComplete="given-name" value={name} onChange={(e)=>setName(e.target.value)} required maxLength={100} disabled={busy}/>
@@ -231,9 +250,10 @@ export function Cinema() {
             <p className="ticket-confirmation">Zakup potwierdzony.</p>
             <div className="ticket-code"><span>Kod biletu</span><strong data-testid="ticket-code">{reservation.code}</strong><p>Zachowaj kod lub wydrukuj bilet.</p></div>
             <button className="primary-button" onClick={()=>window.print()}>Drukuj bilet</button><button className="text-button" onClick={reset}>Wybierz kolejny seans</button>
-          </div> : reservation.status === "expired" ? <div className="expired-content" role="status"><p>Rezerwacja wygasła, fotel wrócił do puli</p><span>Możesz ponownie wybrać dostępne miejsce.</span><button className="primary-button" onClick={reset}>Wybieram ponownie</button></div> : <div className="active-content">
+          </div> : reservation.status === "expired" ? <div className="expired-content" role="status"><p>Rezerwacja wygasła, fotel wrócił do puli</p><span>Możesz ponownie wybrać dostępne miejsce.</span><p>{reservation.refundStatus === "refunded" ? "Płatność została zwrócona na kartę." : reservation.refundStatus === "failed" ? "Zwrot wymaga pomocy kina. Zachowaj identyfikator rezerwacji: " + reservation.reservationId : reservation.refundStatus === "pending" ? "Zwrot płatności jest w toku." : "Jeśli płatność dotrze po terminie, zostanie automatycznie zwrócona."}</p><button className="text-button" onClick={() => { setConfirmationDelayed(false); setPollAttempt((n) => n + 1); setLoadAttempt((n) => n + 1); }}>Sprawdź ponownie</button><button className="primary-button" onClick={reset}>Wybieram ponownie</button></div> : <div className="active-content">
+            {returnMode === "cancel" && <p role="status">Płatność została przerwana. Możesz spróbować ponownie przed końcem rezerwacji.</p>}
             <div className="countdown"><span>Trzymamy Twój fotel jeszcze</span><strong role="timer" aria-label="Pozostały czas rezerwacji">{String(Math.floor(seconds/60)).padStart(2,"0")}:{String(seconds%60).padStart(2,"0")}</strong><p>{seconds === 0 ? "Sprawdzamy ważność rezerwacji na serwerze…" : "Zamień rezerwację w bilet, zanim upłynie czas."}</p></div>
-            <button className="primary-button" disabled={busy} onClick={buy}>{busy ? "Przygotowujemy bilet…" : "Kupuję bilet"}</button><p className="privacy-note">Zakup bez płatności online.</p>
+            {awaitingPayment ? <div role="status"><p>{confirmationDelayed ? "Potwierdzenie płatności trwa dłużej. Nadal sprawdzamy jej status." : "Płatność w toku… Czekamy na potwierdzenie."}</p>{confirmationDelayed && <button className="primary-button" onClick={() => { setConfirmationDelayed(false); setPollAttempt((n) => n + 1); setLoadAttempt((n) => n + 1); }}>Sprawdź ponownie</button>}</div> : <button className="primary-button" disabled={busy || seconds === 0} onClick={buy}>{busy ? "Przechodzimy do płatności…" : `Zapłać ${money(reservation.amount)}`}</button>}<p className="privacy-note">Płatność kartą przez Stripe · tryb testowy</p>
           </div>}
         </aside>
       </div>}
