@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ApiError } from "./errors";
-import { reservationInput } from "./validation";
+import { checkoutInput, reservationInput } from "./validation";
 
 export function json(data: unknown, status = 200, headers?: Record<string, string>) {
   return NextResponse.json(data, { status, headers: { "Cache-Control": "no-store, max-age=0", ...headers } });
@@ -40,4 +40,16 @@ export async function readRawBody(request: Request, limit: number) {
     }
   } finally { reader.releaseLock(); }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+export async function readCheckoutInput(request: Request) {
+  if (!request.body) return {};
+  const raw = await readRawBody(request, 4096);
+  if (!raw.trim()) return {};
+  if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) throw new ApiError(415, "JSON_REQUIRED", "Wyślij dane jako application/json.");
+  let body: unknown;
+  try { body = JSON.parse(raw); } catch { throw new ApiError(400, "INVALID_JSON", "Niepoprawny JSON."); }
+  const parsed = checkoutInput.safeParse(body);
+  if (!parsed.success) throw new ApiError(400, "INVALID_POINTS", "Punkty muszą być nieujemną liczbą całkowitą.");
+  return parsed.data;
 }

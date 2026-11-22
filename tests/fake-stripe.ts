@@ -43,6 +43,12 @@ export async function startFakeStripe() {
       const session = sessions.get(url.pathname.split("/").at(-1)!);
       send(session ?? { error: { message: "Unknown session" } }, session ? 200 : 404); return;
     }
+    if (req.method === "POST" && url.pathname.endsWith("/expire")) {
+      const session = sessions.get(url.pathname.split("/").at(-2)!);
+      if (!session || session.status !== "open") { send({ error: { message: "Cannot expire session" } }, 400); return; }
+      session.status = "expired"; session.url = null;
+      send(session); return;
+    }
     if (url.pathname === "/v1/refunds" && req.method === "GET") {
       send({ object: "list", data: [...refunds.values()].filter((r) => r.payment_intent === url.searchParams.get("payment_intent")), has_more: false }); return;
     }

@@ -71,14 +71,20 @@ export async function getEvent(id: string) {
 }
 
 export async function getReservation(id: string) {
-  const r = await db().reservation.findUnique({ where: { id }, include: { event: true, ticket: true, ownedSeat: true, payments: { where: { refundStatus: { not: null } }, orderBy: { generation: "desc" }, take: 1 } } });
+  const r = await db().reservation.findUnique({ where: { id }, include: { event: true, ticket: true, ownedSeat: true, payments: { orderBy: { generation: "desc" } } } });
   if (!r) throw new ApiError(404, "RESERVATION_NOT_FOUND", "Nie znaleziono rezerwacji.");
   const now = await databaseNow();
+  const delivery = r.ticket ? await db().delivery.findUnique({ where: { reservationId: id } }) : null;
+  const refund = r.payments.find(p => p.refundStatus);
   return {
     reservationId: r.id, event: r.event, seatId: r.seatId, expiresAt: r.expiresAt.toISOString(),
     amount: r.amount,
+    pointsUsed: r.pointsUsed, ...(r.ticket ? { pointsEarned: r.pointsEarned } : {}),
+    cardAmount: r.amount - r.pointsUsed, loyaltyStatus: r.loyaltyStatus,
+    checkoutLocked: r.payments.some(p => ["creating", "open"].includes(p.state)),
+    emailStatus: delivery?.state ?? "none",
     status: r.ticket ? "paid" : r.ownedSeat && r.expiresAt > now ? "held" : "expired",
     ...(r.ticket ? { code: r.ticket.code } : {}),
-    ...(r.payments[0] ? { refundStatus: r.payments[0].refundStatus } : {}), serverNow: now.toISOString()
+    ...(refund ? { refundStatus: refund.refundStatus } : {}), serverNow: now.toISOString()
   };
 }

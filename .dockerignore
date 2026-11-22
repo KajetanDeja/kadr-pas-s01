@@ -11,6 +11,9 @@ playwright-report
 *.tsbuildinfo
 tests
 scripts
+!scripts/
+scripts/*
+!scripts/process-jobs.ts
 playwright.config.ts
 TESTING.local.md
 AGENTS.md

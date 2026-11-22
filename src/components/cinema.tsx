@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import type { CinemaEvent, ReservationView } from "@/lib/types";
 import { api, RequestError } from "@/lib/client-api";
 import { FilmArt } from "./film-art";
+import { earnedPoints, maxPoints } from "@/lib/loyalty";
 
 const storageKey = "kadr.reservationId";
 const rows = Array.from("ABCDEFGH");
@@ -29,6 +30,11 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
   const inFlight = useRef(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [balance, setBalance] = useState<number | null>(null);
+  const [loyaltyMessage, setLoyaltyMessage] = useState("");
+  const [loyaltyLoading, setLoyaltyLoading] = useState(false);
+  const [loyaltyAttempt, setLoyaltyAttempt] = useState(0);
+  const [pointsInput, setPointsInput] = useState("0");
   const [seconds, setSeconds] = useState(0);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [confirmationDelayed, setConfirmationDelayed] = useState(false);
@@ -100,7 +106,7 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
   }, [reservation]);
 
   useEffect(() => {
-    if (!reservation || reservation.status === "paid") return;
+    if (!reservation || (reservation.status === "paid" && reservation.loyaltyStatus !== "pending" && !["pending", "sending"].includes(reservation.emailStatus))) return;
     if (reservation.status === "expired" && !returnMode && reservation.refundStatus !== "pending") return;
     let alive = true, pending = false;
     const update = async () => {
@@ -109,7 +115,7 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
       try {
         const { data } = await api<ReservationView>(`/api/reservations/${reservation.reservationId}`);
         if (alive && !inFlight.current) {
-          setReservation((current) => current?.reservationId === data.reservationId && current.status !== "paid" ? data : current);
+          setReservation((current) => current?.reservationId === data.reservationId ? data : current);
           setError("");
         }
       } catch (e) { if (alive) setError(message(e)); }
@@ -118,7 +124,30 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
     const timer = setInterval(() => void update(), 2000);
     window.addEventListener("focus", update);
     return () => { alive = false; clearInterval(timer); window.removeEventListener("focus", update); };
-  }, [reservation?.reservationId, reservation?.status, reservation?.refundStatus, returnMode, pollAttempt]);
+  }, [reservation?.reservationId, reservation?.status, reservation?.refundStatus, reservation?.loyaltyStatus, reservation?.emailStatus, returnMode, pollAttempt]);
+
+  useEffect(() => {
+    if (reservation?.checkoutLocked) setPointsInput(String(reservation.pointsUsed));
+  }, [reservation?.checkoutLocked, reservation?.pointsUsed]);
+
+  useEffect(() => {
+    const normalized = email.trim().toLowerCase();
+    setBalance(null); setLoyaltyMessage(""); setLoyaltyLoading(false);
+    if (reservation && reservation.status !== "held") return;
+    if (!reservation && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return;
+    const controller = new AbortController();
+    let alive = true;
+    const timer = setTimeout(async () => {
+      setLoyaltyLoading(true);
+      try {
+        const path = reservation ? `/api/reservations/${reservation.reservationId}/loyalty` : `/api/loyalty?email=${encodeURIComponent(normalized)}`;
+        const { data } = await api<{ points: number }>(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]) });
+        if (alive) setBalance(data.points);
+      } catch (e) { if (alive) setLoyaltyMessage(message(e)); }
+      finally { if (alive) setLoyaltyLoading(false); }
+    }, reservation ? 0 : 900);
+    return () => { alive = false; clearTimeout(timer); controller.abort(); };
+  }, [email, reservation?.reservationId, reservation?.status, loyaltyAttempt]);
 
   useEffect(() => {
     if (returnMode !== "success") return;
@@ -152,7 +181,8 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
         body: JSON.stringify({ eventId: selectedEvent.id, seatId: selectedSeat, customerName: name, email })
       });
       remember(data.reservationId);
-      setReservation({ ...data, event: selectedEvent, seatId: selectedSeat, status: "held", serverNow: serverNow! });
+      setReservation({ ...data, event: selectedEvent, seatId: selectedSeat, status: "held", serverNow: serverNow!, pointsUsed: 0, cardAmount: data.amount, loyaltyStatus: "none", checkoutLocked: false, emailStatus: "none" });
+      setPointsInput("0");
       setName(""); setEmail(""); setTaken((prev) => [...new Set([...prev, selectedSeat])]);
     } catch (e) {
       setError(message(e));
@@ -166,7 +196,7 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
     if (inFlight.current || !reservation) return;
     inFlight.current = true; setBusy(true); setError("");
     try {
-      const { data } = await api<{ url: string }>(`/api/reservations/${reservation.reservationId}/checkout`, { method: "POST", signal: AbortSignal.timeout(25000) });
+      const { data } = await api<{ url: string }>(`/api/reservations/${reservation.reservationId}/checkout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points: usedPoints }), signal: AbortSignal.timeout(45000) });
       window.location.assign(data.url);
     } catch (e) {
       setError(message(e));
@@ -177,11 +207,17 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
       }
     } finally { inFlight.current = false; setBusy(false); }
   }
-  function reset() { remember(null); if (initialReservationId) { window.location.assign("/"); return; } setReservation(null); setSelectedSeat(null); setError(""); }
+  function reset() { remember(null); if (initialReservationId) { window.location.assign("/"); return; } setReservation(null); setSelectedSeat(null); setError(""); setBalance(null); setPointsInput("0"); }
   const row = (reservation?.seatId ?? selectedSeat)?.slice(0, 1);
   const seatNumber = (reservation?.seatId ?? selectedSeat)?.slice(1);
   const purchased = reservation?.status === "paid";
   const awaitingPayment = returnMode === "success" && reservation?.status === "held";
+  const limit = maxPoints(reservation?.amount ?? selectedEvent?.price ?? 0, balance ?? 0);
+  const enteredPoints = pointsInput === "" ? 0 : Number(pointsInput);
+  const pointsValid = !!reservation?.checkoutLocked || (Number.isInteger(enteredPoints) && enteredPoints >= 0 && enteredPoints <= limit);
+  const usedPoints = reservation?.checkoutLocked ? reservation.pointsUsed : pointsValid ? enteredPoints : 0;
+  const cardAmount = (reservation?.amount ?? selectedEvent?.price ?? 0) - usedPoints;
+  const loyaltyHint = <div className="loyalty-balance" role="status" aria-live="polite">{loyaltyLoading ? "Sprawdzamy punkty…" : balance !== null ? <>Twoje saldo: <strong>{balance} pkt</strong> ({money(balance)})</> : loyaltyMessage ? <>{loyaltyMessage} Możesz zapłacić całość kartą.<button type="button" className="text-button" disabled={busy} onClick={() => setLoyaltyAttempt(n => n + 1)}>Sprawdź punkty ponownie</button></> : "1000 punktów na start · 100 pkt = 1 zł"}</div>;
 
   return <div className="app-shell">
     <a href="#repertuar" className="skip-link">Przejdź do repertuaru</a>
@@ -243,17 +279,22 @@ export function Cinema({ initialReservationId, returnMode }: { initialReservatio
               <p className="form-caption">{selectedSeat ? `Twój wybór: Rząd ${row}, miejsce ${seatNumber}` : "Najpierw wybierz wolny fotel na mapie."}</p>
               <label htmlFor="customer-name">Twoje imię</label><input id="customer-name" name="customerName" placeholder="np. Aleksandra" autoComplete="given-name" value={name} onChange={(e)=>setName(e.target.value)} required maxLength={100} disabled={busy}/>
               <label htmlFor="customer-email">Adres e-mail</label><input id="customer-email" name="email" type="email" placeholder="ty@przyklad.pl" autoComplete="email" value={email} onChange={(e)=>setEmail(e.target.value)} required maxLength={254} disabled={busy}/>
+              {loyaltyHint}
               <button className="primary-button" type="submit" disabled={!selectedSeat || mapLoading || busy}>{busy ? "Rezerwujemy fotel…" : "Zarezerwuj"}</button>
-              <p className="privacy-note">Dane służą wyłącznie obsłudze tej rezerwacji.</p>
+              <p className="privacy-note">E-mail służy obsłudze rezerwacji, konta punktowego i wysyłce biletu.</p>
             </form>
           </> : purchased ? <div className="ticket-content">
             <p className="ticket-confirmation">Zakup potwierdzony.</p>
             <div className="ticket-code"><span>Kod biletu</span><strong data-testid="ticket-code">{reservation.code}</strong><p>Zachowaj kod lub wydrukuj bilet.</p></div>
+            <dl className="payment-summary"><div><dt>Zapłacono kartą</dt><dd>{money(reservation.cardAmount)}</dd></div><div><dt>Zapłacono punktami</dt><dd>{reservation.pointsUsed} pkt ({money(reservation.pointsUsed)})</dd></div><div><dt>Zebrane punkty</dt><dd>{reservation.loyaltyStatus === "pending" ? "Naliczamy…" : `${reservation.pointsEarned ?? 0} pkt`}</dd></div></dl>
+            {reservation.loyaltyStatus === "pending" && <p className="privacy-note" role="status">Zakup jest potwierdzony. Kończymy naliczanie punktów i przygotowujemy mail z biletem.</p>}
+            {reservation.emailStatus !== "none" && <p className="privacy-note" role="status">{reservation.emailStatus === "delivered" ? "Mail z biletem został doręczony." : reservation.emailStatus === "accepted" ? "Mail z biletem został przekazany do wysyłki." : ["bounced", "failed"].includes(reservation.emailStatus) ? "Nie udało się doręczyć maila. Twój bilet pozostaje ważny — możesz go wydrukować tutaj." : reservation.emailStatus === "review" ? "Wysyłka maila wymaga sprawdzenia przez obsługę kina. Bilet możesz wydrukować tutaj." : "Mail z biletem czeka na wysłanie."}</p>}
             <button className="primary-button" onClick={()=>window.print()}>Drukuj bilet</button><button className="text-button" onClick={reset}>Wybierz kolejny seans</button>
           </div> : reservation.status === "expired" ? <div className="expired-content" role="status"><p>Rezerwacja wygasła, fotel wrócił do puli</p><span>Możesz ponownie wybrać dostępne miejsce.</span><p>{reservation.refundStatus === "refunded" ? "Płatność została zwrócona na kartę." : reservation.refundStatus === "failed" ? "Zwrot wymaga pomocy kina. Zachowaj identyfikator rezerwacji: " + reservation.reservationId : reservation.refundStatus === "pending" ? "Zwrot płatności jest w toku." : "Jeśli płatność dotrze po terminie, zostanie automatycznie zwrócona."}</p><button className="text-button" onClick={() => { setConfirmationDelayed(false); setPollAttempt((n) => n + 1); setLoadAttempt((n) => n + 1); }}>Sprawdź ponownie</button><button className="primary-button" onClick={reset}>Wybieram ponownie</button></div> : <div className="active-content">
             {returnMode === "cancel" && <p role="status">Płatność została przerwana. Możesz spróbować ponownie przed końcem rezerwacji.</p>}
             <div className="countdown"><span>Trzymamy Twój fotel jeszcze</span><strong role="timer" aria-label="Pozostały czas rezerwacji">{String(Math.floor(seconds/60)).padStart(2,"0")}:{String(seconds%60).padStart(2,"0")}</strong><p>{seconds === 0 ? "Sprawdzamy ważność rezerwacji na serwerze…" : "Zamień rezerwację w bilet, zanim upłynie czas."}</p></div>
-            {awaitingPayment ? <div role="status"><p>{confirmationDelayed ? "Potwierdzenie płatności trwa dłużej. Nadal sprawdzamy jej status." : "Płatność w toku… Czekamy na potwierdzenie."}</p>{confirmationDelayed && <button className="primary-button" onClick={() => { setConfirmationDelayed(false); setPollAttempt((n) => n + 1); setLoadAttempt((n) => n + 1); }}>Sprawdź ponownie</button>}</div> : <button className="primary-button" disabled={busy || seconds === 0} onClick={buy}>{busy ? "Przechodzimy do płatności…" : `Zapłać ${money(reservation.amount)}`}</button>}<p className="privacy-note">Płatność kartą przez Stripe · tryb testowy</p>
+            {!awaitingPayment && <div className="loyalty-control">{loyaltyHint}<label htmlFor="use-points">Użyj punktów</label><div className="points-entry"><input id="use-points" type="number" inputMode="numeric" min="0" max={reservation.checkoutLocked ? reservation.pointsUsed : limit} step="1" value={pointsInput} onChange={e => setPointsInput(e.target.value)} disabled={busy || reservation.checkoutLocked || balance === null} aria-describedby="points-hint" aria-invalid={!pointsValid}/><button type="button" className="text-button" disabled={busy || reservation.checkoutLocked || balance === null || limit === 0} onClick={() => setPointsInput(String(limit))}>Użyj maks.</button></div><p id="points-hint" className="privacy-note">{reservation.checkoutLocked ? "Liczba punktów jest ustalona dla rozpoczętej płatności." : `Możesz użyć do ${limit} pkt, maksymalnie połowę ceny biletu.`} 1 pkt = 1 gr.</p>{!pointsValid && <p className="points-error" role="alert">Wpisz liczbę całkowitą od 0 do {limit}.</p>}<dl className="payment-summary"><div><dt>Punktami</dt><dd>{usedPoints} pkt ({money(usedPoints)})</dd></div><div><dt>Do dopłaty kartą</dt><dd>{money(cardAmount)}</dd></div><div><dt>Zbierzesz za zakup</dt><dd>{earnedPoints(cardAmount)} pkt</dd></div></dl></div>}
+            {awaitingPayment ? <div role="status"><p>{confirmationDelayed ? "Potwierdzenie płatności trwa dłużej. Nadal sprawdzamy jej status." : "Płatność w toku… Czekamy na potwierdzenie."}</p>{confirmationDelayed && <button className="primary-button" onClick={() => { setConfirmationDelayed(false); setPollAttempt((n) => n + 1); setLoadAttempt((n) => n + 1); }}>Sprawdź ponownie</button>}</div> : <button className="primary-button" disabled={busy || seconds === 0 || !pointsValid} onClick={buy}>{busy ? "Przechodzimy do płatności…" : `Zapłać ${money(cardAmount)}`}</button>}<p className="privacy-note">Płatność kartą przez Stripe · tryb testowy</p>
           </div>}
         </aside>
       </div>}

@@ -1,6 +1,8 @@
-# KADR — PAS S01, etap II
+# KADR — PAS S01, etap III
 
-Kasa kina: repertuar i cena → fotel → rezerwacja → Stripe Checkout → potwierdzenie webhookiem → bilet do wydruku. Jedna rezerwacja obejmuje jeden fotel na jednym seansie. Wyłącznie płatności testowe, bez prawdziwych pieniędzy.
+Kasa kina: repertuar i cena → fotel → rezerwacja → punkty Voucherify + Stripe Checkout → potwierdzenie webhookiem → bilet do wydruku i mail przez Resend. Jedna rezerwacja obejmuje jeden fotel na jednym seansie. Wyłącznie płatności testowe, bez prawdziwych pieniędzy.
+
+Etap III: 1000 punktów na start, 10 punktów za każdy pełny złoty zapłacony kartą, do połowy ceny punktami (1 pkt = 1 gr). Saldo pochodzi z Voucherify. **[Konfiguracja, kontrakt A/B/C i scenariusz szkolnego pokazu: ETAP-III.md](ETAP-III.md).**
 
 Stos: Next.js App Router, TypeScript, PostgreSQL 17, Prisma 7, React, Tailwind CSS, Zod i oficjalny SDK Stripe. Wersje są przypięte w package-lock.json. Node.js: **22.12+ z linii 22 lub 24+**; Prisma nie obsługuje Node 23. Filmy i ilustracje są fikcyjne.
 
@@ -67,15 +69,16 @@ Typy publiczne: src/lib/types.ts. Każdy seans ma jedną cenę fotela price w gr
 | GET /api/events/:id | { event, takenSeats }, event.price | 404 |
 | POST /api/reservations | 201, { reservationId, expiresAt, amount } | 400, 404, 409, 413, 415, 429; 403 przy pominięciu zaufanego proxy |
 | POST /api/reservations/:id/checkout | 200, { url } | 400, 404, 409 dla opłaconej lub przetwarzanej, 410 dla wygasłej, 429 |
+| GET /api/loyalty?email=… | { email, points }; nowy klient 1000 pkt | 400, 409 przy równoległym rozliczeniu, 429; 503 przy awarii lub limicie Voucherify |
 | GET /api/reservations/:id | Stan opisany poniżej | 400, 404 |
 | POST /api/webhooks/stripe | 200, { received: true } | 400 dla podpisu, trybu live i niezgodnych danych, 413 dla rozmiaru |
 | POST /api/reservations/:id/purchase | { code } wyłącznie dla istniejącego biletu | 402 dla nieopłaconej, 400, 404, 410 |
 
-Odczyt rezerwacji zwraca `{ reservationId, status, amount, expiresAt, event, seatId, serverNow, code?, refundStatus? }`. Status: held, paid albo expired. Kod występuje tylko dla biletu. Opcjonalny refundStatus: pending, refunded, failed. Nie zwracamy imienia ani e-maila.
+Odczyt rezerwacji zwraca `{ reservationId, status, amount, pointsUsed, pointsEarned?, cardAmount, loyaltyStatus, checkoutLocked, emailStatus, expiresAt, event, seatId, serverNow, code?, refundStatus? }`. Status: held, paid albo expired. Kod i pointsEarned występują tylko po zakupie. Opcjonalny refundStatus: pending, refunded, failed. Nie zwracamy imienia ani e-maila. Checkout przyjmuje opcjonalne `{ points }`; brak pola na pierwszym żądaniu oznacza 0. Kwota Stripe to `amount - pointsUsed`.
 
 Wszystkie odpowiedzi API, również błędy, mają Cache-Control: no-store, max-age=0. Błąd ma postać `{ "error": { "code": "…", "message": "…" } }`. 2xx oznacza sukces, 4xx odmowę, 5xx błąd infrastruktury. Brak konfiguracji płatności lub przejściowa awaria Stripe daje 503. Utworzenie rezerwacji dodaje X-Server-Time. Daty to ISO 8601 UTC; interfejs wyświetla Europe/Warsaw.
 
-**A — Checkout:** formularz na / przekazuje eventId, seatId, customerName, email; odpowiedź przekazuje ID, termin i kwotę. Checkout nie przyjmuje ceny ani adresów powrotu od klienta. Serwer używa mode=payment, PLN, jednej sztuki i karty; SDK 23/API 2026-10-28 używa allowed_payment_method_types: ["card"]. client_reference_id wskazuje rezerwację. Parametry żądania i próba płatności są zapisane przed kontaktem ze Stripe. Powtórzenia korzystają z tej samej sesji i klucza idempotencji; wygasłą sesję można zastąpić, jeśli nadal obowiązuje rezerwacja.
+**Checkout (etap II, rozszerzony w III):** formularz na / przekazuje eventId, seatId, customerName, email; odpowiedź przekazuje ID, termin i kwotę. Checkout nie przyjmuje ceny ani adresów powrotu od klienta. Serwer używa mode=payment, PLN, jednej sztuki i karty; SDK 23/API 2026-10-28 używa allowed_payment_method_types: ["card"]. client_reference_id wskazuje rezerwację. Parametry żądania, punkty i próba płatności są zapisane przed kontaktem ze Stripe. Powtórzenia korzystają z tej samej sesji i klucza idempotencji; liczba punktów otwartej sesji jest stała. Wygasłą sesję można zastąpić, jeśli nadal obowiązuje rezerwacja, po rozliczeniu poprzednich punktów.
 
 **B — Webhook:** surowe ciało jest czytane bez parsowania JSON przed weryfikacją stripe.webhooks.constructEvent. Limit 256 KiB działa również bez Content-Length; rezerwacje mają osobny limit 4 KiB. Podpis, testowy tryb, powiązanie sesji, client_reference_id, kwota, PLN, mode, status i payment_status muszą się zgadzać. Nieznane sesje z CLI lub innych aplikacji są potwierdzane i ignorowane. Samo stripe trigger checkout.session.completed nie opłaca dowolnej rezerwacji — zdarzenie musi dotyczyć sesji zapisanej przez nasz Checkout. Automatyczne testy B tworzą taką próbę jako fixture, niezależnie od karty A.
 
@@ -117,6 +120,11 @@ Na Vercel zaufanie do x-vercel-forwarded-for włącza wyłącznie serwerowe VERC
 | Fałszywy, zmieniony lub stary webhook | Podpis SDK na surowym body, tolerancja czasu SDK, odrzucenie live, kontrola sesji i danych. |
 | Duplikaty, utrata odpowiedzi i inna kolejność zdarzeń | Trwałe próby, klucze idempotencji, blokady, tabela zdarzeń, monotoniczny stan biletu. |
 | Stripe jako zewnętrzna usługa: awaria lub opóźnienie | 503 i ponowienie, brak transakcji DB obejmujących sieć, strona oczekiwania, ścisły TTL i pełny zwrot; operator obsługuje ostatecznie odrzucony zwrot. |
+| Voucherify jako zewnętrzna usługa: awaria, nieznany wynik zapisu, limit 100/h | 503, limit lokalny 95/h współdzielony w PostgreSQL, Retry-After, trwały dziennik i uzgadnianie po source_id. Nie ponawiamy w ciemno niejednoznacznych zmian salda. |
+| Powielone powitanie, wydanie lub naliczenie punktów | Blokada klienta między instancjami, trwałe ID operacji, historia Voucherify; punkty za zakup wyłącznie od części kartowej potwierdzonego biletu. |
+| Porzucona sesja, wygasła rezerwacja i punkty | Trwałe zadanie zamyka sesję Stripe przed oddaniem punktów; zadziała bez przeglądarki przy uruchomionym procesie zadań. |
+| Resend jako zewnętrzna usługa: błąd API, utrata odpowiedzi, odbicie maila | Trwały stan wysyłki, stała treść i klucz idempotencji, ponowienia, podpisany webhook; bilet pozostaje ważny. Po końcu okna idempotencji niejednoznaczna wysyłka wymaga sprawdzenia. |
+| Podszycie się pod właściciela e-maila | Szkolny kontrakt identyfikuje klienta e-mailem i nie wymaga logowania. Nie jest to uwierzytelnienie właściciela konta; prawdziwy program wymagałby weryfikacji tożsamości. |
 | Flood i podszycie się pod inną sieć | Oddzielne limity w PostgreSQL, weryfikowane wejście proxy, limit surowego body. |
 | SQL injection, błędne dane i XSS | Zod, parametryzacja Prisma, limity rozmiaru, escaping React. |
 | Wyciek kluczy, danych osobowych lub karty | Sekrety wyłącznie na serwerze, .env ignorowany, bez treści żądań w logach; kartę zbiera wyłącznie Stripe. Stripe otrzymuje e-mail i opis biletu. |
@@ -136,7 +144,7 @@ npm run test:120
 
 Jeśli lokalny sandbox blokuje pomocniczy proces Turbopack, można zbudować przez npm run build -- --webpack. To ten sam kod aplikacji z drugim bundlerem Next.js. Testy wymagają gotowego produkcyjnego buildu.
 
-Runner uruchamia migracje i seed na **osobnej** TEST_DATABASE_URL, dwie instancje aplikacji (3101, 3102) oraz zastępcze Stripe (3103). Nadpisuje oba URL-e bazy, tryb platformy i sekrety testowe, aby nie dotknąć produkcji. Kolejne zestawy należy uruchamiać sekwencyjnie. Testy resetują wyłącznie bazę _test; nie ma publicznych endpointów resetowania ani zmiany czasu. Transport testowy jest wstrzykiwany przez preload Node wyłącznie w runnerze — żadna zmienna aplikacji ani żądanie HTTP nie zmienia adresu Stripe.
+Runner uruchamia migracje i seed na **osobnej** TEST_DATABASE_URL, dwie instancje aplikacji (3101, 3102), zastępcze Stripe (3103) oraz Voucherify/Resend (3104). Nadpisuje oba URL-e bazy, tryb platformy i wszystkie sekrety usług, aby nie dotknąć produkcji ani zużywać limitu Sandbox. Kolejne zestawy należy uruchamiać sekwencyjnie. Testy resetują wyłącznie bazę _test; nie ma publicznych endpointów resetowania ani zmiany czasu. Transport testowy jest wstrzykiwany przez preload Node wyłącznie w runnerze — żadna zmienna aplikacji ani żądanie HTTP nie przełącza usług w tryb zaślepki.
 
 Testy jednostkowe: konfiguracja, sekrety, surowe body, normalizacja i zaufane proxy. Testy API: regresje etapu I, konkurencja i limiter, snapshot ceny, Checkout i jego ponowienia, podpisy, duplikaty webhooków, trwałość kodu, zwroty i ich uzgadnianie, zdarzenia poza kolejnością oraz strony powrotu. test:120 czeka na rzeczywisty upływ ponad dwóch minut.
 
@@ -169,6 +177,8 @@ Wyniki lokalne nie potwierdzają publicznego wdrożenia. Publiczny endpoint webh
 ## Migracje i wdrożenie
 
 Nowa migracja 202611160001_stripe_checkout dodaje ceny, kwoty, próby płatności i zdarzenia. Uzupełnia istniejące seanse ceną 3200 i kopiuje ją do dotychczasowych rezerwacji. Nie usuwa historii ani biletów i nie wymaga dowodu Stripe dla biletów wydanych w etapie I. Używaj prisma migrate deploy, nie db push, aby zachować triggery i ograniczenia SQL.
+
+Migracja 202611220001_loyalty dodaje rozliczenia punktów, identyfikatory kont Voucherify, dziennik operacji, wysyłki oraz zadania. Stare bilety zachowują kod i mają 0 użytych/zebranych punktów; nie naliczamy im bonusów wstecz. Dla etapu III uruchom również `npm run jobs` lub zewnętrzny harmonogram wywołujący chronione `/api/internal/jobs` — szczegóły w ETAP-III.md.
 
 Seed pozostaje powtarzalny: trzy seanse, dwie sale, 240 foteli A1–H10; nie nadpisuje istniejących cen, dat, rezerwacji ani biletów. Demonstracyjne daty to 6 listopada 2026; zachowano regułę etapu I bez odrzucania zakupu na podstawie daty seansu.
 

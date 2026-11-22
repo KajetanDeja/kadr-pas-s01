@@ -4,8 +4,24 @@ import { parseConfig } from "../src/server/config";
 import { clientKey, isVercelDeployment } from "../src/server/rate-limit";
 import { fingerprint, reservationInput } from "../src/server/validation";
 import { readRawBody } from "../src/server/http";
+import { checkoutInput } from "../src/server/validation";
+import { earnedPoints, maxPoints } from "../src/lib/loyalty";
 
 const env = { DATABASE_URL: "postgresql://test:test@localhost:5432/test" };
+test("Punkty: przykłady wszystkich wariantów, pełne złote i limit połowy", () => {
+  for (const [amount, card, earned] of [[3200, 2200, 220], [8900, 7900, 790], [24000, 23000, 2300], [15000, 14000, 1400]]) {
+    assert.equal(maxPoints(amount, 1000), 1000); assert.equal(amount - 1000, card); assert.equal(earnedPoints(card), earned);
+  }
+  assert.equal(maxPoints(3201, 99999), 1600); assert.equal(earnedPoints(2299), 220); assert.equal(earnedPoints(99), 0);
+  assert.deepEqual(checkoutInput.parse({}), {});
+  for (const points of [-1, 1.5, "1000", null, 2147483648]) assert.equal(checkoutInput.safeParse({ points }).success, false);
+});
+test("Usługi: adres Voucherify jest ograniczony do HTTPS API, błędy nie ujawniają sekretów", () => {
+  for (const VOUCHERIFY_API_URL of ["http://api.voucherify.io", "https://api.voucherify.io.evil.example", "https://localhost", "https://secret@api.voucherify.io", "https://api.voucherify.io/path"]) assert.throws(() => parseConfig({ ...env, VOUCHERIFY_API_URL }));
+  assert.equal(parseConfig({ ...env, VOUCHERIFY_API_URL: "https://eu1.api.voucherify.io" }).VOUCHERIFY_API_URL, "https://eu1.api.voucherify.io");
+  assert.throws(() => parseConfig({ ...env, RESEND_API_KEY: "secret-invalid" }), e => e instanceof Error && !e.message.includes("secret-invalid"));
+  assert.equal(parseConfig({ ...env, RESEND_API_KEY: "", RESEND_WEBHOOK_SECRET: "", VOUCHERIFY_APPLICATION_ID: "", VOUCHERIFY_API_URL: "" }).RESEND_API_KEY, undefined);
+});
 test("Stripe: tylko klucze testowe, poprawne sekrety i zaufany origin bez ścieżki", () => {
   assert.equal(parseConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_example", STRIPE_WEBHOOK_SECRET: "whsec_example", APP_URL: "https://kino.example" }).APP_URL, "https://kino.example");
   for (const STRIPE_SECRET_KEY of ["sk_live_example", "pk_test_example", "sk_test_"]) {

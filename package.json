@@ -20,7 +20,9 @@
     "test:api": "tsx scripts/run-tests.ts api",
     "test:vercel": "tsx scripts/run-tests.ts vercel",
     "test:120": "tsx scripts/run-tests.ts ttl120",
-    "stripe:listen": "node scripts/stripe-listen.mjs"
+    "stripe:listen": "node scripts/stripe-listen.mjs",
+    "jobs": "tsx scripts/process-jobs.ts",
+    "loyalty:setup": "tsx scripts/setup-loyalty.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",
@@ -29,6 +31,7 @@
     "pg": "^8.16.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "resend": "6.39.0",
     "stripe": "23.1.0",
     "zod": "4.6.7"
   },

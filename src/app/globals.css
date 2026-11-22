@@ -109,6 +109,17 @@ input:disabled { color: #665e58; background: #eee7df; }
 .ticket-code > span { font-size: 15px; color: var(--muted); }
 .ticket-code > strong { display: block; font: 600 17px/1.6 Consolas, "Courier New", monospace; overflow-wrap: anywhere; margin: 7px 0 12px; }
 .ticket-code p { font-size: 15px; color: var(--muted); }
+.loyalty-balance { padding: 12px; margin: 0 0 18px; background: #eee7df; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.loyalty-control { margin: 16px 0 22px; }
+.loyalty-control label { display: block; font-size: 15px; font-weight: 600; margin-bottom: 7px; }
+.points-entry { display: flex; align-items: center; gap: 12px; }
+.points-entry input { min-width: 0; margin-bottom: 0; flex: 1; }
+.points-entry button { flex: 0 0 auto; margin: 0; padding: 0; }
+.payment-summary { margin: 18px 0 22px; padding: 14px 0; border-block: 1px solid var(--line); font-size: 14px; }
+.payment-summary div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin: 8px 0; }
+.payment-summary dt { color: var(--muted); }
+.payment-summary dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.points-error { color: var(--accent); margin-top: 8px; font-size: 14px; }
 .text-button { display: block; padding: 12px 0 0; min-height: 44px; margin-top: 8px; border: 0; background: transparent; color: var(--accent); font-size: 15px; text-decoration: underline; text-underline-offset: 3px; }
 .expired-content { margin-top: 22px; }
 .expired-content > p { color: var(--accent); font-size: 18px; font-weight: 600; }

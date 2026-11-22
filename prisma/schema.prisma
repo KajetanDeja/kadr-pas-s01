@@ -40,6 +40,9 @@ model Reservation {
   email        String
   fingerprint  String
   amount       Int
+  pointsUsed   Int       @default(0)
+  pointsEarned Int       @default(0)
+  loyaltyStatus String   @default("none")
   createdAt    DateTime  @db.Timestamptz(3)
   expiresAt    DateTime  @db.Timestamptz(3)
   event        Event     @relation(fields: [eventId], references: [id], onDelete: Restrict)
@@ -82,6 +85,9 @@ model PaymentAttempt {
   refundId        String?     @unique
   refundStatus    String?
   createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+  pointsUsed      Int         @default(0)
+  pointsState     String      @default("none")
+  loyaltyEnabled  Boolean     @default(false)
   reservation     Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
   @@unique([reservationId, generation])
 }
@@ -89,4 +95,52 @@ model PaymentAttempt {
 model StripeEvent {
   id          String   @id
   processedAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
+// Identifiers only: the balance is always read from Voucherify.
+model LoyaltyAccount {
+  email           String   @id
+  memberId        String?  @unique
+  state           String   @default("new")
+  welcomeRequired Boolean  @default(false)
+}
+
+model LoyaltyOperation {
+  id        String   @id
+  email     String
+  points    Int
+  state     String   @default("pending")
+  sentAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  @@index([email, state])
+}
+
+model Delivery {
+  reservationId String   @id @db.Uuid
+  providerId    String?  @unique
+  state         String   @default("pending")
+  request       Json?
+  firstSentAt   DateTime? @db.Timestamptz(3)
+  lastEventAt   DateTime? @db.Timestamptz(3)
+}
+
+model DeliveryEvent {
+  id         String   @id
+  providerId String
+  state      String
+  occurredAt DateTime @db.Timestamptz(3)
+  @@index([providerId])
+}
+
+model WorkItem {
+  id          String   @id
+  kind        String
+  targetId    String   @db.Uuid
+  state       String   @default("pending")
+  attempts    Int      @default(0)
+  availableAt DateTime @default(now()) @db.Timestamptz(3)
+  leaseUntil  DateTime? @db.Timestamptz(3)
+  token       String?
+  lastError   String?
+  @@index([state, availableAt])
 }

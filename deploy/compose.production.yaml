@@ -15,13 +15,28 @@ services:
   app:
     image: kadr-pas-s01:local
     build: { context: .., dockerfile: Dockerfile }
-    environment:
+    environment: &app-environment
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kadr}
       RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
       TRUSTED_PROXY_SECRET: ${TRUSTED_PROXY_SECRET:?Ustaw sekret proxy minimum 32 znaki}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:?Ustaw testowy klucz Stripe}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?Ustaw sekret webhooka}
       APP_URL: ${APP_URL:?Ustaw publiczny adres HTTPS}
+      VOUCHERIFY_APPLICATION_ID: ${VOUCHERIFY_APPLICATION_ID:-}
+      VOUCHERIFY_SECRET_KEY: ${VOUCHERIFY_SECRET_KEY:-}
+      VOUCHERIFY_API_URL: ${VOUCHERIFY_API_URL:-https://api.voucherify.io}
+      VOUCHERIFY_CAMPAIGN_ID: ${VOUCHERIFY_CAMPAIGN_ID:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-onboarding@resend.dev}
+      RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+  jobs:
+    image: kadr-pas-s01:local
+    environment: *app-environment
+    command: ["npm", "run", "jobs"]
     depends_on:
       db: { condition: service_healthy }
     restart: unless-stopped

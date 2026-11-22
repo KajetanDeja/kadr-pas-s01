@@ -43,6 +43,11 @@ export async function buy(id: string, server = base) {
   return request(`/api/reservations/${id}/purchase`, {}, undefined, server);
 }
 export async function reset() {
+  await db.workItem.deleteMany();
+  await db.deliveryEvent.deleteMany();
+  await db.delivery.deleteMany();
+  await db.loyaltyOperation.deleteMany();
+  await db.loyaltyAccount.deleteMany();
   await db.ticket.deleteMany();
   await db.stripeEvent.deleteMany();
   await db.paymentAttempt.deleteMany();
@@ -50,6 +55,7 @@ export async function reset() {
   await db.reservation.deleteMany();
   await db.rateLimit.deleteMany();
   await fetch("http://127.0.0.1:3103/__reset", { method: "POST" });
+  await fetch("http://127.0.0.1:3104/__reset", { method: "POST" });
 }
 export async function waitUntil(iso: string, offsetMs = 50) {
   const [row] = await db.$queryRaw<{now: Date}[]>`SELECT clock_timestamp() AS now`;

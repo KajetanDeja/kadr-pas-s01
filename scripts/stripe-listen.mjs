@@ -16,7 +16,7 @@ const listener = spawn("stripe", [
   "listen", "--skip-update", "--color", "off", "--events-from", "@self",
   "--events", "checkout.session.completed,checkout.session.expired,refund.created,refund.updated,refund.failed",
   "--forward-to", `${origin.origin}/api/webhooks/stripe`
-], { env: { ...process.env, STRIPE_API_KEY: key }, stdio: ["ignore", "pipe", "pipe"] });
+], { env: { ...process.env, STRIPE_API_KEY: key }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: process.platform === "win32" });
 
 let pending = "", configured = false;
 function lineOutput(text) {

@@ -33,8 +33,9 @@ test("Migracja: istniejąca rezerwacja i bilet etapu I zachowują kod i właści
     await client.query(`UPDATE "EventSeat" SET "currentReservationId"=$1 WHERE "eventId"='legacy'`, [id]);
     await client.query(`INSERT INTO "Ticket" (id,"reservationId","eventId","seatId",code,"purchasedAt") VALUES ($1,$2,'legacy','F7','KADR-LEGACY',clock_timestamp()-interval '45 minutes')`, [randomUUID(), id]);
     await client.query(await readFile(new URL("../prisma/migrations/202611160001_stripe_checkout/migration.sql", import.meta.url), "utf8"));
-    const { rows } = await client.query(`SELECT r.amount,e.price,t.code,s."currentReservationId" FROM "Reservation" r JOIN "Event" e ON e.id=r."eventId" JOIN "Ticket" t ON t."reservationId"=r.id JOIN "EventSeat" s ON s."eventId"=r."eventId" AND s."seatId"=r."seatId"`);
-    assert.deepEqual(rows, [{ amount: 3200, price: 3200, code: "KADR-LEGACY", currentReservationId: id }]);
+    await client.query(await readFile(new URL("../prisma/migrations/202611220001_loyalty/migration.sql", import.meta.url), "utf8"));
+    const { rows } = await client.query(`SELECT r.amount,e.price,t.code,s."currentReservationId",r."pointsUsed",r."pointsEarned",r."loyaltyStatus" FROM "Reservation" r JOIN "Event" e ON e.id=r."eventId" JOIN "Ticket" t ON t."reservationId"=r.id JOIN "EventSeat" s ON s."eventId"=r."eventId" AND s."seatId"=r."seatId"`);
+    assert.deepEqual(rows, [{ amount: 3200, price: 3200, code: "KADR-LEGACY", currentReservationId: id, pointsUsed: 0, pointsEarned: 0, loyaltyStatus: "none" }]);
   } finally { await client.query("ROLLBACK"); await client.end(); }
 });
 

@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createDb } from "../src/server/db";
 import { seed } from "../prisma/seed";
 import { startFakeStripe } from "../tests/fake-stripe";
+import { startFakeServices } from "../tests/fake-services";
 
 const mode = process.argv[2];
 if (!["api", "vercel", "ttl120"].includes(mode)) throw new Error("Wybierz api, vercel albo ttl120.");
@@ -23,7 +24,10 @@ const env: NodeJS.ProcessEnv = {
   VERCEL_ENV: mode === "vercel" ? "production" : "development",
   TEST_PROXY_MODE: mode === "vercel" ? "vercel" : "nginx",
   TEST_BASE_URL: "http://127.0.0.1:3101", TEST_SECOND_URL: "http://127.0.0.1:3102",
-  STRIPE_SECRET_KEY: "sk_test_automated", STRIPE_WEBHOOK_SECRET: "whsec_automated", APP_URL: "http://127.0.0.1:3101"
+  STRIPE_SECRET_KEY: "sk_test_automated", STRIPE_WEBHOOK_SECRET: "whsec_automated", APP_URL: "http://127.0.0.1:3101",
+  VOUCHERIFY_APPLICATION_ID: "test_app", VOUCHERIFY_SECRET_KEY: "test_secret", VOUCHERIFY_API_URL: "https://api.voucherify.io", VOUCHERIFY_CAMPAIGN_ID: "camp_test",
+  RESEND_API_KEY: "re_automated", RESEND_FROM: "onboarding@resend.dev", RESEND_WEBHOOK_SECRET: `whsec_${Buffer.from("automated-secret-for-resend-tests").toString("base64")}`,
+  CRON_SECRET: randomBytes(32).toString("hex")
 };
 const children: ChildProcess[] = [];
 function run(args: string[]) {
@@ -53,17 +57,20 @@ async function start(port: number) {
   throw new Error("Przekroczono czas uruchamiania serwera testowego.");
 }
 let fakeStripe: Awaited<ReturnType<typeof startFakeStripe>> | undefined;
+let fakeServices: Awaited<ReturnType<typeof startFakeServices>> | undefined;
 try {
   await run(["node_modules/prisma/build/index.js", "migrate", "deploy"]);
   const db = createDb(url);
   try { await seed(db); } finally { await db.$disconnect(); }
   fakeStripe = await startFakeStripe();
+  fakeServices = await startFakeServices();
   await start(3101);
   if (mode !== "ttl120") await start(3102);
-  await run(["--import", "tsx", "--test", ...(mode === "ttl120" ? ["tests/ttl120.test.ts"] : ["--test-concurrency=1", "tests/api.test.ts", "tests/payments.test.ts"])]);
+  await run(["--import", "tsx", "--test", ...(mode === "ttl120" ? ["tests/ttl120.test.ts"] : ["--test-concurrency=1", "tests/api.test.ts", "tests/payments.test.ts", "tests/loyalty.test.ts"])]);
 } catch (e) {
   console.error(e instanceof Error ? e.message : "Błąd testów."); process.exitCode = 1;
 } finally {
   for (const child of children) if (child.exitCode === null) child.kill();
   fakeStripe?.closeAllConnections(); fakeStripe?.close();
+  fakeServices?.closeAllConnections(); fakeServices?.close();
 }
