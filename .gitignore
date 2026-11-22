@@ -30,6 +30,7 @@ node_modules/
 /TESTING.local.md
 /test-results/
 /playwright-report/
+/.playwright-cli/
 /output/
 
 # Lokalne instrukcje dla agentów, materiały robocze i ustawienia edytora.

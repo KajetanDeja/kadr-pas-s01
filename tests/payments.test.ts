@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import pg from "pg";
-import { base, second, db, input, reset, request, reserve, webhook, completed, waitUntil, success } from "./helpers";
+import { base, second, db, input, reset, request, reserve, webhook, completed, waitUntil, success, ownerCount } from "./helpers";
 
 beforeEach(reset);
 after(() => db.$disconnect());
@@ -74,6 +74,40 @@ test("A: utrata odpowiedzi Stripe nie tworzy drugiej sesji", async () => {
   success(await checkout(r.data.reservationId));
   success(await checkout(r.data.reservationId, second));
   assert.equal((await fakeState()).sessions.length, 1);
+});
+
+test("II.A1: amount z requestu jest ignorowane, opłacona rezerwacja odmawia nowego Checkout", async () => {
+  const r = await reserve(); success(r);
+  const path = `/api/reservations/${r.data.reservationId}/checkout`;
+  const first = await request(path, { amount: 100 }); success(first);
+  const repeated = await request(path, { amount: 1 }, undefined, second); success(repeated);
+  assert.deepEqual(repeated.data, first.data);
+  const { sessions } = await fakeState();
+  assert.equal(sessions.length, 1); assert.equal(sessions[0].amount_total, r.data.amount);
+  success(await webhook(completed(sessions[0])));
+  assert.equal((await request(path, { amount: 100 })).status, 409);
+  assert.equal((await fakeState()).sessions.length, 1); assert.equal(await db.ticket.count(), 1);
+});
+
+test("C2: pięć wyścigów Checkout i webhooka z nową rezerwacją przy TTL", async () => {
+  for (const [i, offset] of [-50, 0, 50, -20, 20].entries()) {
+    const seatId = `D${i + 1}`;
+    const r = await reserve(input(seatId, `checkout-x${i}@example.com`)); success(r);
+    success(await checkout(r.data.reservationId));
+    const session = (await fakeState()).sessions.find((s) => s.client_reference_id === r.data.reservationId)!;
+    assert.ok(session);
+    await waitUntil(r.data.expiresAt, offset);
+    const [payment, replacement] = await Promise.all([
+      webhook(completed(session)),
+      reserve(input(seatId, `checkout-y${i}@example.com`), undefined, second)
+    ]);
+    success(payment); assert.ok([201, 409].includes(replacement.status));
+    const view = (await request(`/api/reservations/${r.data.reservationId}`)).data;
+    assert.ok(view.status === "paid" || view.refundStatus === "refunded");
+    assert.ok(!(view.status === "paid" && replacement.status === 201));
+    assert.ok(await ownerCount("orbita", seatId) <= 1);
+    assert.ok(await db.ticket.count({ where: { eventId: "orbita", seatId } }) <= 1);
+  }
 });
 
 test("A: odmowy 400/404/410, wygasły Checkout można zastąpić przed TTL", async () => {
@@ -150,6 +184,28 @@ test("B: późna płatność jest zwracana bez odebrania fotela nowemu klientowi
   assert.equal(view.data.code, undefined);
   const owner = await db.eventSeat.findUniqueOrThrow({ where: { eventId_seatId: { eventId: "orbita", seatId: "F7" } } });
   assert.equal(owner.currentReservationId, other.data.reservationId);
+});
+
+test("II.A2: płatność po terminie bez nowego klienta też kończy się pełnym zwrotem", async () => {
+  const { r, session } = await prepared();
+  await waitUntil(r.data.expiresAt);
+  const event = completed(session);
+  success(await webhook(event)); success(await webhook(event, second));
+  const view = (await request(`/api/reservations/${r.data.reservationId}`)).data;
+  assert.equal(view.status, "expired"); assert.equal(view.refundStatus, "refunded");
+  assert.equal(view.code, undefined); assert.equal(await db.ticket.count(), 0);
+  assert.equal((await fakeState()).refunds.length, 1);
+  assert.ok(!(await request("/api/events/orbita")).data.takenSeats.includes("F7"));
+});
+
+test("II.C1: webhook wystawia bilet bez wizyty na stronie powrotu w mniej niż 15 s", async () => {
+  const { r, session } = await prepared();
+  const start = performance.now();
+  success(await webhook(completed(session)));
+  const view = (await request(`/api/reservations/${r.data.reservationId}`)).data;
+  assert.equal(view.status, "paid"); assert.match(view.code, /^KADR-/);
+  assert.ok(performance.now() - start < 15000);
+  assert.equal(await db.ticket.count(), 1);
 });
 
 test("B: awaria zwrotu daje 503, ponowienie webhooka kończy pojedynczy zwrot", async () => {
