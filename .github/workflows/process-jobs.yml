@@ -1,0 +1,40 @@
+name: KADR background jobs
+
+on:
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: kadr-background-jobs
+  cancel-in-progress: false
+
+jobs:
+  process:
+    if: github.repository == 'KajetanDeja/kadr-pas-s01'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Process pending loyalty and ticket email jobs
+        env:
+          APP_URL: https://kadr-pas-s01.vercel.app
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Missing CRON_SECRET repository secret"
+            exit 1
+          fi
+          for attempt in 1 2 3 4 5; do
+            result="$(curl --silent --show-error --fail --max-time 65 \
+              --proto '=https' \
+              --header "Authorization: Bearer $CRON_SECRET" \
+              "$APP_URL/api/internal/jobs")"
+            echo "$result"
+            if jq -e '.completed == 0 and .retried == 0' <<< "$result" > /dev/null; then
+              break
+            fi
+          done

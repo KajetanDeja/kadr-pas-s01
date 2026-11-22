@@ -100,7 +100,7 @@ Za każdym kolejnym pokazem użyj innej etykiety po `+`, aby rzeczywiście był 
 
 ## Wdrożenie opcjonalne
 
-Na serwerze ustaw te same serwerowe nazwy zmiennych oraz właściwy `APP_URL`. Użyj istniejącego procesu wdrożenia z `prisma migrate deploy`. Na Vercel długotrwały proces `npm run jobs` wymaga zastąpienia harmonogramem wywołującym `/api/internal/jobs` z sekretem, np. raz na minutę. Nie zakładaj, że długotrwały proces Node działa w funkcji serverless. Lokalny pokaz nie wymaga tej konfiguracji.
+Na serwerze ustaw te same serwerowe nazwy zmiennych oraz właściwy `APP_URL`. Użyj istniejącego procesu wdrożenia z `prisma migrate deploy`. Dla darmowego Vercel Hobby repozytorium zawiera `.github/workflows/process-jobs.yml`: harmonogram GitHub Actions wywołuje `/api/internal/jobs` co 5 minut. Sekret Actions `CRON_SECRET` musi odpowiadać zmiennej Vercel o tej samej nazwie. Zaległe operacje i oddawanie punktów mogą czekać do kolejnego uruchomienia (GitHub może dodatkowo opóźnić start). W Actions dostępne jest też ręczne Run workflow. Nie zakładaj, że długotrwały proces Node działa w funkcji serverless. Lokalny pokaz nadal korzysta z `npm run jobs`.
 
 Aby strona rozróżniała doręczenie i odbicie w czasie rzeczywistym, w Resend dodaj webhook do publicznego `https://twoja-aplikacja/api/webhooks/resend`, zaznacz `email.delivered`, `email.bounced`, `email.failed`, `email.suppressed` i ustaw sekret w `RESEND_WEBHOOK_SECRET`. Lokalny adres 127.0.0.1 nie jest osiągalny dla Resend — bez tunelu sprawdzaj końcowy status w panelu; strona poprawnie pokazuje wtedy przyjęcie do wysyłki.
 
